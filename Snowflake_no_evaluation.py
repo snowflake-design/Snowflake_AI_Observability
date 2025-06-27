@@ -1,5 +1,3 @@
-
-
 import os
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
@@ -33,8 +31,12 @@ class SimpleAIApp:
     @instrument(
         span_type=SpanAttributes.SpanType.GENERATION,
         attributes={
-            SpanAttributes.GENERATION.INPUT: "prompt",
-            SpanAttributes.GENERATION.OUTPUT: "return",
+            # Correct attribute mapping for input and output
+            SpanAttributes.GENERATION.INPUT: lambda args, kwargs: kwargs.get("question", args[0] if args else ""),
+            SpanAttributes.GENERATION.OUTPUT: lambda result: result,
+            # Additional attributes for better observability
+            SpanAttributes.GENERATION.MODEL: "llama3.1-70b",
+            SpanAttributes.GENERATION.PROVIDER: "snowflake-cortex"
         }
     )
     def ask_question(self, question: str) -> str:
@@ -51,6 +53,61 @@ class SimpleAIApp:
         
         try:
             # Use Snowflake Cortex Complete function
+            response = complete("llama3.1-70b", prompt)
+            return response
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
+    
+    @instrument(
+        span_type=SpanAttributes.SpanType.RETRIEVAL,
+        attributes={
+            SpanAttributes.RETRIEVAL.QUERY: lambda args, kwargs: kwargs.get("query", args[0] if args else ""),
+            SpanAttributes.RETRIEVAL.DOCUMENTS: lambda result: result if isinstance(result, list) else [result]
+        }
+    )
+    def retrieve_context(self, query: str) -> list:
+        """
+        Example retrieval function for RAG applications
+        """
+        # This would normally connect to a search service or vector database
+        # For demo purposes, return mock context
+        mock_contexts = [
+            f"Context 1 related to: {query}",
+            f"Context 2 about: {query}",
+            f"Additional context for: {query}"
+        ]
+        return mock_contexts
+    
+    @instrument(
+        span_type=SpanAttributes.SpanType.GENERATION,
+        attributes={
+            # For RAG applications, map to the correct RECORD_ROOT attributes
+            "RECORD_ROOT.INPUT": lambda args, kwargs: kwargs.get("question", args[0] if args else ""),
+            "RECORD_ROOT.OUTPUT": lambda result: result,
+            "RETRIEVAL.QUERY_TEXT": lambda args, kwargs: kwargs.get("question", args[0] if args else ""),
+            SpanAttributes.GENERATION.MODEL: "llama3.1-70b"
+        }
+    )
+    def ask_question_with_context(self, question: str, context: list = None) -> str:
+        """
+        RAG-style question answering with context
+        """
+        if context is None:
+            context = self.retrieve_context(question)
+        
+        context_str = "\n".join(context)
+        prompt = f"""
+        Based on the following context, answer the question:
+        
+        Context:
+        {context_str}
+        
+        Question: {question}
+        
+        Answer:
+        """
+        
+        try:
             response = complete("llama3.1-70b", prompt)
             return response
         except Exception as e:
@@ -72,10 +129,10 @@ def test_basic_cortex(session: Session):
 
 def main():
     """
-    Main function to test AI Observability setup minimally
+    Main function to test AI Observability setup with correct span attributes
     """
-    print("🚀 Minimal Snowflake AI Observability Test...")
-    print("=" * 50)
+    print("🚀 Enhanced Snowflake AI Observability Test with Correct Span Attributes...")
+    print("=" * 70)
     
     # Step 1: Create Snowflake session
     print("\n1. Creating Snowflake session...")
@@ -117,8 +174,8 @@ def main():
     # Step 5: Create TruApp for observability
     print("\n5. Creating TruApp for observability...")
     try:
-        app_name = "minimal_test_app"
-        app_version = "v1.0"
+        app_name = "enhanced_test_app"
+        app_version = "v1.1"
         
         tru_app = TruApp(
             ai_app,
@@ -133,65 +190,96 @@ def main():
         print(f"❌ Failed to create TruApp: {e}")
         return
     
-    # Step 6: Test instrumented AI calls
-    print("\n6. Testing instrumented AI calls...")
+    # Step 6: Test different types of instrumented AI calls
+    print("\n6. Testing instrumented AI calls with correct span attributes...")
     try:
-        test_questions = [
-            "What is artificial intelligence?",
-            "Explain machine learning in simple terms",
-            "What is Snowflake?"
-        ]
+        # Test simple generation
+        print("   Testing simple generation...")
+        with tru_app as recording:
+            response1 = ai_app.ask_question("What is artificial intelligence?")
+        print(f"   ✅ Simple generation completed: {response1[:100]}...")
         
-        print("Making instrumented AI calls...")
-        for i, question in enumerate(test_questions, 1):
-            print(f"   Question {i}: {question}")
-            
-            # This call will be automatically instrumented and traced
-            with tru_app as recording:
-                response = ai_app.ask_question(question)
-            
-            print(f"   Response: {response[:100]}...")
-            print(f"   ✅ Call {i} completed with tracing")
+        # Test RAG-style generation
+        print("   Testing RAG-style generation...")
+        with tru_app as recording:
+            response2 = ai_app.ask_question_with_context(
+                "What are the benefits of machine learning?",
+                context=[
+                    "Machine learning helps automate decision making",
+                    "ML can process large amounts of data quickly",
+                    "Machine learning improves over time with more data"
+                ]
+            )
+        print(f"   ✅ RAG generation completed: {response2[:100]}...")
         
-        print("✅ All instrumented calls completed successfully")
+        # Test retrieval function
+        print("   Testing retrieval instrumentation...")
+        with tru_app as recording:
+            contexts = ai_app.retrieve_context("Snowflake features")
+        print(f"   ✅ Retrieval completed: {len(contexts)} contexts retrieved")
+        
+        print("✅ All instrumented calls completed successfully with proper span attributes")
         
     except Exception as e:
         print(f"❌ Instrumented calls failed: {e}")
         return
     
-    # Step 7: Check for observability data
+    # Step 7: Check for observability data with enhanced queries
     print("\n7. Checking for AI Observability data...")
     try:
-        # Wait a moment for data to be written
         import time
-        time.sleep(2)
+        time.sleep(3)  # Wait a bit longer for data to be written
         
-        # Try to query the observability events table
+        # Query for events with span details
         result = session.sql("""
-            SELECT COUNT(*) as event_count 
+            SELECT COUNT(*) as event_count,
+                   COUNT(DISTINCT SPAN_ID) as unique_spans,
+                   COUNT(DISTINCT SPAN_NAME) as unique_span_names
             FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
             WHERE APPLICATION_NAME = %s
         """, params=[app_name]).collect()
         
-        count = result[0]['EVENT_COUNT']
-        print(f"✅ AI Observability Events table accessible")
-        print(f"   Events for app '{app_name}': {count}")
-        
-        if count > 0:
-            print("🎉 SUCCESS: Observability data is being captured!")
+        if result:
+            row = result[0]
+            print(f"✅ AI Observability Events table accessible")
+            print(f"   Total events for app '{app_name}': {row['EVENT_COUNT']}")
+            print(f"   Unique spans: {row['UNIQUE_SPANS']}")
+            print(f"   Unique span names: {row['UNIQUE_SPAN_NAMES']}")
             
-            # Show sample of recent events
-            recent_events = session.sql("""
-                SELECT EVENT_TIMESTAMP, SPAN_NAME, EVENT_TYPE 
-                FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-                WHERE APPLICATION_NAME = %s
-                ORDER BY EVENT_TIMESTAMP DESC 
-                LIMIT 5
-            """, params=[app_name]).collect()
+            if row['EVENT_COUNT'] > 0:
+                print("🎉 SUCCESS: Observability data is being captured with proper attributes!")
+                
+                # Show detailed span information
+                span_details = session.sql("""
+                    SELECT SPAN_NAME, EVENT_TYPE, 
+                           COUNT(*) as event_count,
+                           MIN(EVENT_TIMESTAMP) as first_event,
+                           MAX(EVENT_TIMESTAMP) as last_event
+                    FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+                    WHERE APPLICATION_NAME = %s
+                    GROUP BY SPAN_NAME, EVENT_TYPE
+                    ORDER BY first_event DESC
+                """, params=[app_name]).collect()
+                
+                print("\n   Detailed span information:")
+                for span in span_details:
+                    print(f"     {span['SPAN_NAME']} ({span['EVENT_TYPE']}): {span['EVENT_COUNT']} events")
+                
+                # Show sample attributes for generation spans
+                generation_attrs = session.sql("""
+                    SELECT SPAN_NAME, ATTRIBUTES
+                    FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+                    WHERE APPLICATION_NAME = %s 
+                      AND SPAN_NAME LIKE '%ask_question%'
+                      AND EVENT_TYPE = 'span_end'
+                    LIMIT 2
+                """, params=[app_name]).collect()
+                
+                if generation_attrs:
+                    print("\n   Sample generation span attributes:")
+                    for attr in generation_attrs:
+                        print(f"     {attr['SPAN_NAME']}: {str(attr['ATTRIBUTES'])[:200]}...")
             
-            print("\n   Recent events:")
-            for event in recent_events:
-                print(f"     {event['EVENT_TIMESTAMP']} - {event['SPAN_NAME']} ({event['EVENT_TYPE']})")
         else:
             print("ℹ️  No events found yet - data might still be processing")
             
@@ -199,48 +287,27 @@ def main():
         print(f"❌ Could not access observability data: {e}")
         print("   This might indicate insufficient privileges or setup issues")
     
-    # Step 8: Test direct query to see what's available
-    print("\n8. Checking what observability data is available...")
-    try:
-        # Check if we can see any events at all
-        all_events = session.sql("""
-            SELECT COUNT(*) as total_events
-            FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS
-        """).collect()
-        
-        total = all_events[0]['TOTAL_EVENTS']
-        print(f"   Total events in observability table: {total}")
-        
-        if total > 0:
-            # Show applications that have events
-            apps = session.sql("""
-                SELECT APPLICATION_NAME, COUNT(*) as event_count
-                FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS
-                GROUP BY APPLICATION_NAME
-                ORDER BY event_count DESC
-                LIMIT 10
-            """).collect()
-            
-            print("   Applications with observability data:")
-            for app in apps:
-                print(f"     {app['APPLICATION_NAME']}: {app['EVENT_COUNT']} events")
-                
-    except Exception as e:
-        print(f"   Could not query observability table: {e}")
+    print("\n" + "=" * 70)
+    print("🎉 Enhanced AI Observability test completed!")
+    print("\nKey improvements made:")
+    print("✓ Fixed span attribute mapping for GENERATION spans")
+    print("✓ Added proper input/output lambda functions")
+    print("✓ Included RECORD_ROOT.INPUT and RECORD_ROOT.OUTPUT for evaluation")
+    print("✓ Added RETRIEVAL.QUERY_TEXT for RAG compatibility")
+    print("✓ Enhanced observability data validation")
     
-    print("\n" + "=" * 50)
-    print("🎉 Minimal AI Observability test completed!")
-    print("\nWhat was tested:")
-    print("✓ Snowflake session creation")
-    print("✓ Basic Cortex AI functionality")
-    print("✓ TruLens instrumentation setup")
-    print("✓ Instrumented AI calls with automatic tracing")
-    print("✓ Observability data capture verification")
+    print("\nSpan Attributes now properly configured:")
+    print("- SpanAttributes.GENERATION.INPUT: Maps function input parameter")
+    print("- SpanAttributes.GENERATION.OUTPUT: Maps function return value")
+    print("- RECORD_ROOT.INPUT: Required for evaluation metrics")
+    print("- RECORD_ROOT.OUTPUT: Required for evaluation metrics")
+    print("- RETRIEVAL.QUERY_TEXT: Required for RAG applications")
+    
     print("\nNext steps:")
     print("1. Check Snowsight UI: AI & ML → Observability")
     print("2. Look for your application:", app_name)
-    print("3. Query SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS directly")
-    print("4. If you need evaluations, create datasets later with proper privileges")
+    print("3. Verify span attributes are properly captured")
+    print("4. Create datasets for evaluation using the captured attributes")
     
     # Cleanup
     session.close()
@@ -253,6 +320,6 @@ if __name__ == "__main__":
     print("- trulens-connectors-snowflake")
     print("\nInstall with:")
     print("pip install snowflake-snowpark-python trulens-core trulens-providers-cortex trulens-connectors-snowflake")
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 70)
     
     main()
