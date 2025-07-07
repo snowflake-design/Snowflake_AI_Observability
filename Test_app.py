@@ -137,7 +137,7 @@ def main():
         session.close()
         return
 
-    APP_NAME = "MYSIMPLEAIAPP" # Changed to all caps for robust EXTERNAL AGENT naming
+    APP_NAME = "TESTAPP" # Changed for a fresh start!
     APP_VERSION = "v1.0"
 
     logging.info(f"\n4. Creating TruApp for observability (Name: {APP_NAME}, Version: {APP_VERSION}).")
