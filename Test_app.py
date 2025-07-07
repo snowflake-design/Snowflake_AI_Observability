@@ -1,4 +1,5 @@
 import os
+import time
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
 from trulens.core.otel.instrument import instrument
@@ -6,33 +7,34 @@ from trulens.otel.semconv.trace import SpanAttributes
 from trulens.apps.app import TruApp
 from trulens.connectors.snowflake import SnowflakeConnector
 
+# Add more logging for debugging
+import logging
+logging.basicConfig(level=logging.DEBUG) # Set to DEBUG for maximum verbosity
+logging.getLogger('snowflake.snowpark').setLevel(logging.INFO) # Adjust Snowpark level if too noisy
+logging.getLogger('trulens').setLevel(logging.DEBUG)
+
+# --- IMPORTANT: Configure your Snowflake connection details ---
+SNOWFLAKE_CONFIG = {
+    'account': os.getenv('SNOWFLAKE_ACCOUNT', 'YOUR_SNOWFLAKE_ACCOUNT_IDENTIFIER'), # e.g., 'xyz12345.us-east-1'
+    'user': os.getenv('SNOWFLAKE_USER', 'YOUR_SNOWFLAKE_USERNAME'),
+    'password': os.getenv('SNOWFLAKE_PASSWORD', 'YOUR_SNOWFLAKE_PASSWORD'),
+    'warehouse': os.getenv('SNOWFLAKE_WAREHOUSE', 'YOUR_SNOWFLAKE_WAREHOUSE'),
+    'database': os.getenv('SNOWFLAKE_DATABASE', 'YOUR_SNOWFLAKE_DATABASE'),
+    'schema': os.getenv('SNOWFLAKE_SCHEMA', 'YOUR_SNOWFLAKE_SCHEMA'),
+    'role': os.getenv('SNOWFLAKE_ROLE', 'YOUR_SNOWFLAKE_ROLE') # This role MUST have SNOWFLAKE.AI_OBSERVABILITY_ADMIN
+}
+
 # Set environment variable for TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
 
-# Snowflake connection parameters - UPDATE THESE
-SNOWFLAKE_CONFIG = {
-    'account': 'your_account',        # Your Snowflake account identifier
-    'user': 'your_username',          # Your username
-    'password': 'your_password',      # Your password
-    'warehouse': 'your_warehouse',    # Your warehouse
-    'database': 'your_database',      # Any database you have access to
-    'schema': 'your_schema',          # Any schema you have access to
-    'role': 'your_role'               # Your role
-}
-
+# Define your AI application class
 class SimpleAIApp:
-    """
-    Simple AI application for testing observability - Simplified approach without lambda functions
-    """
-    
     def __init__(self, session: Session):
         self.session = session
     
     @instrument(span_type=SpanAttributes.SpanType.GENERATION)
-    def ask_question(self, question: str) -> str:
-        """
-        Simple AI question answering using Snowflake Cortex
-        """
+    def generate_answer(self, question: str) -> str:
+        print(f"  [AIApp] Generating answer for: '{question}'...")
         prompt = f"""
         You are a helpful assistant. Answer the following question concisely:
         
@@ -40,39 +42,34 @@ class SimpleAIApp:
         
         Answer:
         """
-        
         try:
-            # Use Snowflake Cortex Complete function
-            response = complete("llama3.1-70b", prompt)
+            response = complete("mixtral-8x7b", prompt)
+            print(f"  [AIApp] Answer generated.")
             return response
         except Exception as e:
+            print(f"  [AIApp] Error generating response: {str(e)}")
             return f"Error generating response: {str(e)}"
-    
+            
     @instrument(span_type=SpanAttributes.SpanType.RETRIEVAL)
-    def retrieve_context(self, query: str) -> list:
-        """
-        Example retrieval function for RAG applications
-        """
-        # This would normally connect to a search service or vector database
-        # For demo purposes, return mock context
-        mock_contexts = [
-            f"Context 1 related to: {query}",
-            f"Context 2 about: {query}",
-            f"Additional context for: {query}"
+    def retrieve_info(self, topic: str) -> list:
+        print(f"  [AIApp] Retrieving info for: '{topic}'...")
+        time.sleep(0.5) 
+        mock_info = [
+            f"Fact 1: Snowflake is a cloud data platform.",
+            f"Fact 2: It offers data warehousing, data lakes, and data engineering capabilities.",
+            f"Fact 3: Snowflake Cortex provides AI/ML functions, including LLMs.",
+            f"Fact 4: AI Observability helps monitor AI applications."
         ]
-        return mock_contexts
-    
+        relevant_info = [info for info in mock_info if topic.lower() in info.lower()]
+        print(f"  [AIApp] Retrieved {len(relevant_info)} pieces of info.")
+        return relevant_info if relevant_info else mock_info[:2]
+
     @instrument(span_type=SpanAttributes.SpanType.GENERATION)
-    def ask_question_with_context(self, question: str, context: list = None) -> str:
-        """
-        RAG-style question answering with context
-        """
-        if context is None:
-            context = self.retrieve_context(question)
-        
-        context_str = "\n".join(context)
+    def ask_with_context(self, question: str, context_list: list) -> str:
+        print(f"  [AIApp] Generating answer with context for: '{question}'...")
+        context_str = "\n".join(context_list)
         prompt = f"""
-        Based on the following context, answer the question:
+        Based on the following context, answer the question concisely.
         
         Context:
         {context_str}
@@ -81,171 +78,100 @@ class SimpleAIApp:
         
         Answer:
         """
-        
         try:
-            response = complete("llama3.1-70b", prompt)
+            response = complete("mixtral-8x7b", prompt)
+            print(f"  [AIApp] Answer with context generated.")
             return response
         except Exception as e:
-            return f"Error generating response: {str(e)}"
-
-def test_basic_cortex(session: Session):
-    """
-    Test basic Cortex functionality without instrumentation
-    """
-    print("Testing basic Cortex functionality...")
-    try:
-        response = complete("llama3.1-70b", "What is 2+2?")
-        print("✅ Basic Cortex test successful")
-        print(f"   Response: {response}")
-        return True
-    except Exception as e:
-        print(f"❌ Basic Cortex test failed: {e}")
-        return False
+            print(f"  [AIApp] Error generating response with context: {str(e)}")
+            return f"Error generating response with context: {str(e)}"
 
 def main():
-    """
-    Main function to test AI Observability setup with minimal instrumentation
-    """
-    print("🚀 Simplified Snowflake AI Observability Test...")
-    print("=" * 70)
-    
-    # Step 1: Create Snowflake session
-    print("\n1. Creating Snowflake session...")
+    print("--- Snowflake AI Observability Test Script ---")
+    print("1. Ensuring Snowflake session is created.")
+    session = None
     try:
         session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
-        print("✅ Snowflake session created successfully")
-        print(f"   Current role: {session.get_current_role()}")
-        print(f"   Current database: {session.get_current_database()}")
-        print(f"   Current schema: {session.get_current_schema()}")
-        
+        print(f"✅ Session created successfully. Current role: {session.get_current_role()}")
+        print(f"   Database: {session.get_current_database()}, Schema: {session.get_current_schema()}")
     except Exception as e:
         print(f"❌ Failed to create Snowflake session: {e}")
+        print("Please check your SNOWFLAKE_CONFIG details and network connectivity.")
         return
-    
-    # Step 2: Test basic Cortex functionality
-    print("\n2. Testing basic Cortex functionality...")
-    if not test_basic_cortex(session):
-        print("❌ Cannot proceed without basic Cortex access")
-        return
-    
-    # Step 3: Create AI application
-    print("\n3. Creating AI application...")
+
+    print("\n2. Initializing AI Application.")
+    ai_app = SimpleAIApp(session)
+    print("✅ AI Application initialized.")
+
+    print("\n3. Setting up TruLens Snowflake Connector.")
+    tru_connector = None
     try:
-        ai_app = SimpleAIApp(session)
-        print("✅ AI application created")
+        tru_connector = SnowflakeConnector(snowpark_session=session)
+        print("✅ TruLens Snowflake Connector created.")
     except Exception as e:
-        print(f"❌ Failed to create AI application: {e}")
+        print(f"❌ Failed to create TruLens Snowflake Connector: {e}")
+        print("Ensure 'trulens-connectors-snowflake' is installed.")
+        session.close()
         return
-    
-    # Step 4: Setup TruLens connector with fixed parameters
-    print("\n4. Setting up TruLens connector...")
+
+    APP_NAME = "MySimpleAIApp" 
+    APP_VERSION = "v1.0"
+
+    print(f"\n4. Creating TruApp for observability (Name: {APP_NAME}, Version: {APP_VERSION}).")
+    tru_app = None
     try:
-        # Use only snowpark_session parameter to avoid mismatch
-        tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
-        print("✅ TruLens Snowflake connector created")
-    except Exception as e:
-        print(f"❌ Failed to create TruLens connector: {e}")
-        return
-    
-    # Step 5: Create TruApp for observability
-    print("\n5. Creating TruApp for observability...")
-    try:
-        app_name = "simple_test_app"
-        app_version = "v1.0"
-        
         tru_app = TruApp(
             ai_app,
-            app_name=app_name,
-            app_version=app_version,
-            connector=tru_snowflake_connector
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
+            connector=tru_connector
         )
-        print("✅ TruApp created successfully")
-        print(f"   App name: {app_name}")
-        print(f"   App version: {app_version}")
+        print("✅ TruApp created successfully.")
+        print(f"   Note: This step attempts to create/verify the EXTERNAL AGENT '{APP_NAME}' VERSION '{APP_VERSION}' in Snowflake.")
     except Exception as e:
         print(f"❌ Failed to create TruApp: {e}")
-        return
-    
-    # Step 6: Test different types of instrumented AI calls
-    print("\n6. Testing instrumented AI calls with simplified approach...")
-    try:
-        # Test simple generation
-        print("   Testing simple generation...")
-        with tru_app as recording:
-            response1 = ai_app.ask_question("What is artificial intelligence?")
-        print(f"   ✅ Simple generation completed: {response1[:100]}...")
-        
-        # Test retrieval function
-        print("   Testing retrieval...")
-        with tru_app as recording:
-            contexts = ai_app.retrieve_context("Snowflake features")
-        print(f"   ✅ Retrieval completed: {len(contexts)} contexts retrieved")
-        
-        # Test RAG-style generation
-        print("   Testing RAG generation...")
-        with tru_app as recording:
-            response2 = ai_app.ask_question_with_context(
-                "What are the benefits of machine learning?",
-                context=[
-                    "Machine learning helps automate decision making",
-                    "ML can process large amounts of data quickly",
-                    "Machine learning improves over time with more data"
-                ]
-            )
-        print(f"   ✅ RAG generation completed: {response2[:100]}...")
-        
-        print("✅ All instrumented calls completed successfully")
-        
-    except Exception as e:
-        print(f"❌ Instrumented calls failed: {e}")
-        print("   But this is expected - let's check if traces were still captured...")
-    
-
-    
-    print("\n" + "=" * 70)
-    print("🎉 Simplified AI Observability test completed!")
-    print("\nSimplified approach used:")
-    print("✓ Removed problematic lambda functions")
-    print("✓ Used basic @instrument() decorators only")
-    print("✓ Fixed SnowflakeConnector parameter mismatch")
-    print("✓ Minimal span configuration")
-    
-    print("\nKey fixes for your errors:")
-    print("- No lambda functions in @instrument() decorators")
-    print("- Fixed SnowflakeConnector initialization (removed database/schema params)")
-    print("- Simplified span type declarations")
-    print("- Better error handling throughout")
-    
-    print("\nNext steps:")
-    print("1. Check if this runs without session closed errors")
-    print("2. Wait 5-15 minutes for data to appear in Snowflake")
-    print("3. Query: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE APPLICATION_NAME = 'simple_test_app'")
-    print("4. Check if TRACE_ID and SPAN_ID are populated")
-    print("5. Go to Snowsight → AI & ML → Evaluations to see your app")
-    
-    print("\n⚠️  IMPORTANT: Let the script complete fully before checking Snowflake")
-    print("   The session closing errors happen during cleanup but traces should still be captured")
-    
-    # Don't close session immediately - let TruLens finish processing
-    print("\n📝 Keeping session open for TruLens data processing...")
-    import time
-    time.sleep(3)  # Give TruLens time to upload data
-    
-    # Cleanup
-    try:
+        print("This is where the EXTERNAL AGENT is registered/created. A failure here will lead to ingestion errors.")
+        print(f"Detailed Error: {e}") # Print the full exception here
         session.close()
-        print("✅ Session closed successfully")
+        return
+
+    print("\n5. Running instrumented AI calls to generate observability data.")
+    
+    # Test a simple generation
+    print("\n--- Test Case 1: Simple LLM Generation ---")
+    with tru_app as recording:
+        question1 = "What is the capital of France?"
+        answer1 = ai_app.generate_answer(question1)
+        print(f"Response: {answer1[:100]}...")
+
+    # Test a RAG-style flow (retrieve then generate)
+    print("\n--- Test Case 2: RAG-style Flow ---")
+    with tru_app as recording:
+        topic_query = "Snowflake observability"
+        context_retrieved = ai_app.retrieve_info(topic_query)
+        rag_question = "What does Snowflake offer for AI monitoring?"
+        rag_answer = ai_app.ask_with_context(rag_question, context_retrieved)
+        print(f"Response: {rag_answer[:100]}...")
+
+    print("\n--- All instrumented calls completed. ---")
+    print("TruLens is now attempting to upload data to Snowflake (please wait for logs).")
+    time.sleep(10) # Give TruLens some time to upload data asynchronously
+
+    print("\n6. Verification Steps in Snowflake (after a few minutes):")
+    print("   a. Go to Snowsight -> AI & ML -> Evaluations (under 'Observability').")
+    print(f"      You should see your application '{APP_NAME}' (Version: {APP_VERSION}) listed.")
+    print("   b. Query the event table directly (wait 5-15 minutes for data propagation):")
+    print(f"      SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
+    print(f"      WHERE APPLICATION_NAME = '{APP_NAME}' AND APPLICATION_VERSION = '{APP_VERSION}';")
+    print("      Check if TRACE_ID, SPAN_ID, and data in the 'RECORD' column are populated (not NULL).")
+
+    print("\n7. Closing Snowflake session.")
+    try:
+        if session:
+            session.close()
+            print("✅ Snowflake session closed successfully.")
     except Exception as e:
-        print(f"ℹ️  Session was already closed: {e}")
+        print(f"ℹ️ Error closing session (might be already closed): {e}")
 
 if __name__ == "__main__":
-    print("Required packages:")
-    print("- snowflake-snowpark-python")
-    print("- trulens-core")
-    print("- trulens-providers-cortex") 
-    print("- trulens-connectors-snowflake")
-    print("\nInstall with:")
-    print("pip install snowflake-snowpark-python trulens-core trulens-providers-cortex trulens-connectors-snowflake")
-    print("\n" + "=" * 70)
-    
     main()
