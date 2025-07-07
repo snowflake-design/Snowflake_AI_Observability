@@ -22,7 +22,7 @@ SNOWFLAKE_CONFIG = {
 
 class SimpleAIApp:
     """
-    Simple AI application for testing observability with proper instrumentation
+    Simple AI application for testing observability - Following official Snowflake AI Observability patterns
     """
     
     def __init__(self, session: Session):
@@ -31,15 +31,18 @@ class SimpleAIApp:
     @instrument(
         span_type=SpanAttributes.SpanType.GENERATION,
         attributes={
-            # Use string keys instead of SpanAttributes constants for better compatibility
+            # Map function parameters to official Snowflake AI Observability attributes
+            "RECORD_ROOT.INPUT": lambda self, question: question,
+            "RECORD_ROOT.OUTPUT": lambda result: result,
+            # Additional metadata
             "llm.request.model": "llama3.1-70b",
-            "llm.provider": "snowflake-cortex",
-            "llm.request.type": "completion"
+            "llm.provider": "snowflake-cortex"
         }
     )
     def ask_question(self, question: str) -> str:
         """
         Simple AI question answering using Snowflake Cortex
+        Maps to RECORD_ROOT.INPUT and RECORD_ROOT.OUTPUT attributes
         """
         prompt = f"""
         You are a helpful assistant. Answer the following question concisely:
@@ -59,13 +62,17 @@ class SimpleAIApp:
     @instrument(
         span_type=SpanAttributes.SpanType.RETRIEVAL,
         attributes={
-            "retrieval.source": "mock_database",
-            "retrieval.type": "similarity_search"
+            # Map retrieval parameters to official Snowflake AI Observability attributes
+            "RETRIEVAL.QUERY_TEXT": lambda self, query: query,
+            "RETRIEVAL.RETRIEVED_CONTEXTS": lambda result: result,
+            # Additional metadata
+            "retrieval.source": "mock_database"
         }
     )
     def retrieve_context(self, query: str) -> list:
         """
         Example retrieval function for RAG applications
+        Maps to RETRIEVAL.QUERY_TEXT and RETRIEVAL.RETRIEVED_CONTEXTS attributes
         """
         # This would normally connect to a search service or vector database
         # For demo purposes, return mock context
@@ -79,15 +86,20 @@ class SimpleAIApp:
     @instrument(
         span_type=SpanAttributes.SpanType.GENERATION,
         attributes={
+            # For RAG applications, map both input/output AND retrieval attributes
+            "RECORD_ROOT.INPUT": lambda self, question, context=None: question,
+            "RECORD_ROOT.OUTPUT": lambda result: result,
+            "RETRIEVAL.QUERY_TEXT": lambda self, question, context=None: question,
+            # Additional metadata
             "llm.request.model": "llama3.1-70b",
             "llm.provider": "snowflake-cortex",
-            "llm.request.type": "rag_completion",
-            "application.type": "question_answering"
+            "application.type": "rag"
         }
     )
     def ask_question_with_context(self, question: str, context: list = None) -> str:
         """
         RAG-style question answering with context
+        Maps to multiple official Snowflake AI Observability attributes for RAG evaluation
         """
         if context is None:
             context = self.retrieve_context(question)
@@ -126,10 +138,10 @@ def test_basic_cortex(session: Session):
 
 def main():
     """
-    Main function to test AI Observability setup with fixed instrumentation
+    Main function to test AI Observability setup following official Snowflake patterns
     """
-    print("🚀 Fixed Snowflake AI Observability Test...")
-    print("=" * 70)
+    print("🚀 Official Snowflake AI Observability Test (Following Documentation)...")
+    print("=" * 80)
     
     # Step 1: Create Snowflake session
     print("\n1. Creating Snowflake session...")
@@ -171,8 +183,8 @@ def main():
     # Step 5: Create TruApp for observability
     print("\n5. Creating TruApp for observability...")
     try:
-        app_name = "fixed_test_app"
-        app_version = "v1.2"
+        app_name = "official_test_app"
+        app_version = "v1.0"
         
         tru_app = TruApp(
             ai_app,
@@ -188,16 +200,22 @@ def main():
         return
     
     # Step 6: Test different types of instrumented AI calls
-    print("\n6. Testing instrumented AI calls with fixed instrumentation...")
+    print("\n6. Testing instrumented AI calls with official Snowflake attributes...")
     try:
-        # Test simple generation
-        print("   Testing simple generation...")
+        # Test simple generation (RECORD_ROOT.INPUT/OUTPUT)
+        print("   Testing simple generation with RECORD_ROOT attributes...")
         with tru_app as recording:
             response1 = ai_app.ask_question("What is artificial intelligence?")
         print(f"   ✅ Simple generation completed: {response1[:100]}...")
         
-        # Test RAG-style generation
-        print("   Testing RAG-style generation...")
+        # Test retrieval (RETRIEVAL.QUERY_TEXT/RETRIEVED_CONTEXTS)
+        print("   Testing retrieval with RETRIEVAL attributes...")
+        with tru_app as recording:
+            contexts = ai_app.retrieve_context("Snowflake features")
+        print(f"   ✅ Retrieval completed: {len(contexts)} contexts retrieved")
+        
+        # Test RAG-style generation (combines both attribute types)
+        print("   Testing RAG generation with combined attributes...")
         with tru_app as recording:
             response2 = ai_app.ask_question_with_context(
                 "What are the benefits of machine learning?",
@@ -209,49 +227,52 @@ def main():
             )
         print(f"   ✅ RAG generation completed: {response2[:100]}...")
         
-        # Test retrieval function
-        print("   Testing retrieval instrumentation...")
-        with tru_app as recording:
-            contexts = ai_app.retrieve_context("Snowflake features")
-        print(f"   ✅ Retrieval completed: {len(contexts)} contexts retrieved")
-        
-        print("✅ All instrumented calls completed successfully with fixed attributes")
+        print("✅ All instrumented calls completed with official Snowflake attributes")
         
     except Exception as e:
         print(f"❌ Instrumented calls failed: {e}")
         return
     
-    print("\n" + "=" * 70)
-    print("🎉 Fixed AI Observability test completed!")
-    print("\nKey fixes made:")
-    print("✓ Removed problematic lambda functions from span attributes")
-    print("✓ Used simple string-based attribute keys for better compatibility")
-    print("✓ Simplified @instrument() decorators to avoid parameter mapping issues")
-    print("✓ Added relevant LLM and application metadata")
+    print("\n" + "=" * 80)
+    print("🎉 Official Snowflake AI Observability test completed!")
+    print("\nImplementation follows official Snowflake AI Observability documentation:")
+    print("✓ Uses official reserved attributes from Snowflake docs")
+    print("✓ RECORD_ROOT.INPUT/OUTPUT for generation spans")
+    print("✓ RETRIEVAL.QUERY_TEXT/RETRIEVED_CONTEXTS for retrieval spans")
+    print("✓ Proper lambda functions for parameter mapping")
+    print("✓ Compatible with Snowflake AI Observability evaluation metrics")
     
-    print("\nFixed Instrumentation approach:")
-    print("- @instrument() with span_type and static attributes")
-    print("- No complex lambda functions that cause parameter access errors")
-    print("- Simple string keys for attributes (e.g., 'llm.request.model')")
-    print("- Proper span types: GENERATION and RETRIEVAL")
+    print("\nOfficial Snowflake AI Observability attributes used:")
+    print("- RECORD_ROOT.INPUT: Input prompt to the LLM")
+    print("- RECORD_ROOT.OUTPUT: Generated response from the LLM")
+    print("- RETRIEVAL.QUERY_TEXT: User query for RAG application")
+    print("- RETRIEVAL.RETRIEVED_CONTEXTS: Context retrieved from search service")
+    
+    print("\nSupported evaluation metrics with this implementation:")
+    print("- Answer Relevance: Uses RECORD_ROOT.INPUT + RECORD_ROOT.OUTPUT")
+    print("- Context Relevance: Uses RETRIEVAL.QUERY_TEXT + RETRIEVAL.RETRIEVED_CONTEXTS")
+    print("- Groundedness: Uses RETRIEVAL.RETRIEVED_CONTEXTS + RECORD_ROOT.OUTPUT")
+    print("- Coherence: Uses RECORD_ROOT.OUTPUT")
+    print("- Cost and Latency: Automatically tracked")
     
     print("\nNext steps:")
-    print("1. Run this code and check for errors")
+    print("1. Run this code and verify no parameter mapping errors")
     print("2. Query: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
-    print("3. Look for non-null TRACE_ID and SPAN_ID values")
-    print("4. Check ATTRIBUTES column for your custom metadata")
+    print("3. Check for non-null TRACE_ID and proper ATTRIBUTES")
+    print("4. Go to Snowsight → AI & ML → Evaluations to see your app")
+    print("5. Create datasets and runs for evaluation")
     
     # Cleanup
     session.close()
 
 if __name__ == "__main__":
-    print("Required packages:")
+    print("Required packages (latest versions):")
     print("- snowflake-snowpark-python")
     print("- trulens-core")
     print("- trulens-providers-cortex")
     print("- trulens-connectors-snowflake")
     print("\nInstall with:")
     print("pip install snowflake-snowpark-python trulens-core trulens-providers-cortex trulens-connectors-snowflake")
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 80)
     
     main()
