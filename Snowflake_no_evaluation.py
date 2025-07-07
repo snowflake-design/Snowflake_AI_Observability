@@ -111,9 +111,13 @@ test_queries = [
     "What is Python programming?"
 ]
 
-print("\n=== Creating a Run for Proper Trace Ingestion ===")
+print("\n=== Creating Run Object (Required for Span Ingestion) ===")
 
-# Create a simple test dataset for the run
+# Create run with in-memory dataset (no Snowflake upload needed)
+from trulens.core.run import Run, RunConfig
+import pandas as pd
+
+# Create test data in memory only
 test_data = pd.DataFrame({
     'QUERY': [
         "What is machine learning?",
@@ -122,55 +126,53 @@ test_data = pd.DataFrame({
     ]
 })
 
-# Upload test dataset to Snowflake
-print("Creating test dataset...")
-session.write_pandas(test_data, "BASIC_TEST_QUERIES", overwrite=True)
-print("✅ Test dataset created")
+print("Creating run with in-memory dataset...")
 
-# Create a run configuration
-from trulens.core.run import Run, RunConfig
-
+# Create run configuration using DATAFRAME (not TABLE)
 run_config = RunConfig(
     run_name="basic_test_run",
-    dataset_name="BASIC_TEST_QUERIES", 
+    dataset_name="memory_dataset",  # Just a name, not a real table
     description="Basic LLM test run",
-    source_type="TABLE",
+    source_type="DATAFRAME",  # Use DATAFRAME instead of TABLE
     dataset_spec={
         "input": "QUERY",
     },
 )
 
-# Add the run to TruLens
-print("Creating run...")
 try:
+    # Add the run to TruLens
+    print("Adding run to TruApp...")
     run: Run = tru_llm_app.add_run(run_config=run_config)
-    print("✅ Run created successfully")
+    print("✅ Run object created successfully")
     
-    # Start the run - this should properly handle span ingestion
-    print("Starting run (this will call instrumented functions)...")
-    run.start()
-    print("✅ Run completed successfully")
+    # Start the run with the in-memory dataframe
+    print("Starting run with in-memory data...")
+    run.start(input_df=test_data)  # Pass the dataframe directly
+    print("✅ Run completed successfully - spans should be ingested")
     
 except Exception as e:
-    print(f"⚠️ Run creation/start had issues: {e}")
-    print("Trying alternative approach...")
+    print(f"❌ Run creation failed: {e}")
+    print("Trying manual approach with run context...")
     
-    # Alternative: Manual calls with context manager
-    print("\n=== Alternative: Manual Calls with Context Manager ===")
-    for i, query in enumerate(test_queries, 1):
-        print(f"\nQuery {i}: {query}")
-        try:
+    # Alternative: Create run but use manual calls
+    try:
+        run: Run = tru_llm_app.add_run(run_config=run_config)
+        
+        # Manual calls within run context
+        for i, query in enumerate(test_data['QUERY'], 1):
+            print(f"\nManual Query {i}: {query}")
             with tru_llm_app as recording:
                 response = llm_app.query(query)
             print(f"Response: {response[:100]}...")
-            print("✅ Trace captured")
-        except Exception as e:
-            print(f"❌ Error: {e}")
+            print("✅ Manual trace captured")
+            
+    except Exception as e2:
+        print(f"❌ Manual approach also failed: {e2}")
 
 # Wait for ingestion
 print("\n⏳ Waiting for trace ingestion...")
 import time
-time.sleep(10)  # Longer wait for system to process
+time.sleep(5)
 
 print("\n=== Verification ===")
 print(f"Application: {app_name}")
