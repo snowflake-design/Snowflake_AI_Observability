@@ -137,25 +137,15 @@ def main():
         print(f"❌ Failed to create AI application: {e}")
         return
     
-    # Step 4: Setup TruLens connector with error handling
+    # Step 4: Setup TruLens connector with fixed parameters
     print("\n4. Setting up TruLens connector...")
     try:
-        # Try different connector initialization approaches
-        tru_snowflake_connector = SnowflakeConnector(
-            snowpark_session=session,
-            database=session.get_current_database(),
-            schema=session.get_current_schema()
-        )
+        # Use only snowpark_session parameter to avoid mismatch
+        tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
         print("✅ TruLens Snowflake connector created")
     except Exception as e:
-        print(f"⚠️  Primary connector creation failed: {e}")
-        try:
-            # Fallback approach
-            tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
-            print("✅ TruLens Snowflake connector created (fallback)")
-        except Exception as e2:
-            print(f"❌ Failed to create TruLens connector: {e2}")
-            return
+        print(f"❌ Failed to create TruLens connector: {e}")
+        return
     
     # Step 5: Create TruApp for observability
     print("\n5. Creating TruApp for observability...")
@@ -217,24 +207,36 @@ def main():
     print("\nSimplified approach used:")
     print("✓ Removed problematic lambda functions")
     print("✓ Used basic @instrument() decorators only")
-    print("✓ Added error handling for connector issues")
+    print("✓ Fixed SnowflakeConnector parameter mismatch")
     print("✓ Minimal span configuration")
     
     print("\nKey fixes for your errors:")
     print("- No lambda functions in @instrument() decorators")
-    print("- Added fallback SnowflakeConnector initialization")
+    print("- Fixed SnowflakeConnector initialization (removed database/schema params)")
     print("- Simplified span type declarations")
     print("- Better error handling throughout")
     
     print("\nNext steps:")
-    print("1. Check if this runs without lambda function errors")
+    print("1. Check if this runs without session closed errors")
     print("2. Wait 5-15 minutes for data to appear in Snowflake")
     print("3. Query: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE APPLICATION_NAME = 'simple_test_app'")
     print("4. Check if TRACE_ID and SPAN_ID are populated")
     print("5. Go to Snowsight → AI & ML → Evaluations to see your app")
     
+    print("\n⚠️  IMPORTANT: Let the script complete fully before checking Snowflake")
+    print("   The session closing errors happen during cleanup but traces should still be captured")
+    
+    # Don't close session immediately - let TruLens finish processing
+    print("\n📝 Keeping session open for TruLens data processing...")
+    import time
+    time.sleep(3)  # Give TruLens time to upload data
+    
     # Cleanup
-    session.close()
+    try:
+        session.close()
+        print("✅ Session closed successfully")
+    except Exception as e:
+        print(f"ℹ️  Session was already closed: {e}")
 
 if __name__ == "__main__":
     print("Required packages:")
