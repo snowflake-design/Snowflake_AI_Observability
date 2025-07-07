@@ -210,40 +210,7 @@ def main():
         print(f"❌ Instrumented calls failed: {e}")
         print("   But this is expected - let's check if traces were still captured...")
     
-    # Step 7: Check for basic trace capture
-    print("\n7. Checking for basic trace capture...")
-    try:
-        import time
-        time.sleep(2)  # Wait for data to be written
-        
-        # Simple count query
-        result = session.sql("""
-            SELECT COUNT(*) as event_count
-            FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-            WHERE APPLICATION_NAME = %s
-        """, params=[app_name]).collect()
-        
-        if result and result[0]['EVENT_COUNT'] > 0:
-            print(f"🎉 SUCCESS: Found {result[0]['EVENT_COUNT']} events in observability table!")
-            
-            # Show some basic info
-            details = session.sql("""
-                SELECT SPAN_NAME, EVENT_TYPE, COUNT(*) as cnt
-                FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-                WHERE APPLICATION_NAME = %s
-                GROUP BY SPAN_NAME, EVENT_TYPE
-                ORDER BY cnt DESC
-            """, params=[app_name]).collect()
-            
-            print("   Event breakdown:")
-            for detail in details:
-                print(f"     {detail['SPAN_NAME']} ({detail['EVENT_TYPE']}): {detail['CNT']}")
-                
-        else:
-            print("ℹ️  No events found yet - data might still be processing")
-            
-    except Exception as e:
-        print(f"❌ Could not check observability data: {e}")
+
     
     print("\n" + "=" * 70)
     print("🎉 Simplified AI Observability test completed!")
@@ -261,9 +228,10 @@ def main():
     
     print("\nNext steps:")
     print("1. Check if this runs without lambda function errors")
-    print("2. Query: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
-    print("3. Look for your app_name in the results")
+    print("2. Wait 5-15 minutes for data to appear in Snowflake")
+    print("3. Query: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE APPLICATION_NAME = 'simple_test_app'")
     print("4. Check if TRACE_ID and SPAN_ID are populated")
+    print("5. Go to Snowsight → AI & ML → Evaluations to see your app")
     
     # Cleanup
     session.close()
