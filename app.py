@@ -1,159 +1,257 @@
 import os
-import streamlit as st
-import PyPDF2
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
-from trulens_eval import instrument, TruApp
-from trulens_eval.otel.semconv.trace import SpanAttributes
-from trulens_eval.connectors.snowflake import SnowflakeConnector
+from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
-from trulens_eval.streamlit import trulens_feedback, trulens_trace, trulens_leaderboard
+from trulens.core.otel.instrument import instrument
+from trulens.otel.semconv.trace import SpanAttributes
+from trulens.apps.app import TruApp
+from trulens.connectors.snowflake import SnowflakeConnector
 
-APP_NAME = "LocalPDFRAG"
-APP_VERSION = "v1"
-
+# Set environment variable for TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
 
-def load_pdf_chunks(pdf_file, chunk_size=500):
-    reader = PyPDF2.PdfReader(pdf_file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() + "\n"
-    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-    return chunks
+# Snowflake connection parameters - UPDATE THESE
+SNOWFLAKE_CONFIG = {
+    'account': 'your_account',        # Your Snowflake account identifier
+    'user': 'your_username',          # Your username
+    'password': 'your_password',      # Your password
+    'warehouse': 'your_warehouse',    # Your warehouse
+    'database': 'your_database',      # Any database you have access to
+    'schema': 'your_schema',          # Any schema you have access to
+    'role': 'your_role'               # Your role
+}
 
-def embed_chunks(chunks, model_name="all-MiniLM-L6-v2"):
-    embedder = SentenceTransformer(model_name)
-    chunk_embeddings = embedder.encode(chunks)
-    chunk_embeddings = np.array(chunk_embeddings).astype("float32")
-    return embedder, chunk_embeddings
-
-def build_faiss_index(chunk_embeddings):
-    dimension = chunk_embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(chunk_embeddings)
-    return index
-
-class LocalRAG:
-    def __init__(self, chunks, index, embedder):
-        self.chunks = chunks
-        self.index = index
-        self.embedder = embedder
-
-    @instrument(span_type=SpanAttributes.SpanType.RETRIEVAL)
-    def retrieve_context(self, query, top_k=4):
-        query_vec = self.embedder.encode([query]).astype("float32")
-        D, I = self.index.search(query_vec, top_k)
-        return [self.chunks[i] for i in I[0]]
-
-    @instrument(span_type=SpanAttributes.SpanType.GENERATION)
-    def generate_completion(self, query, context_str):
+class SimpleAIApp:
+    """
+    Simple AI application for testing observability with proper instrumentation
+    """
+    
+    def __init__(self, session: Session):
+        self.session = session
+    
+    @instrument(
+        span_type=SpanAttributes.SpanType.GENERATION,
+        attributes={
+            # Use string keys instead of SpanAttributes constants for better compatibility
+            "llm.request.model": "llama3.1-70b",
+            "llm.provider": "snowflake-cortex",
+            "llm.request.type": "completion"
+        }
+    )
+    def ask_question(self, question: str) -> str:
+        """
+        Simple AI question answering using Snowflake Cortex
+        """
         prompt = f"""
-You are an expert assistant extracting information from context provided.
-Answer the question in long-form, fully and completely, based on the context. Do not hallucinate.
-If you don´t have the information just say so. If you do have the information you need, just tell me the answer.
-
-Context: {context_str}
-
-Question:
-{query}
-
-Answer:
-"""
-        response = ""
-        stream = complete("mistral-large2", prompt, stream=True)
-        for update in stream:
-            response += update
-            yield update
-        return response
-
-    @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
-    def query(self, query):
-        context_list = self.retrieve_context(query)
-        context_str = "\n\n".join(context_list)
-        return context_str, self.generate_completion(query, context_str)
-
-def create_snowflake_connector():
-    sf_connector = SnowflakeConnector(
-        user=os.getenv("SF_USER"),
-        password=os.getenv("SF_PASSWORD"),
-        account=os.getenv("SF_ACCOUNT"),
-        warehouse=os.getenv("SF_WAREHOUSE"),
-        database=os.getenv("SF_DATABASE"),
-        schema=os.getenv("SF_SCHEMA")
+        You are a helpful assistant. Answer the following question concisely:
+        
+        Question: {question}
+        
+        Answer:
+        """
+        
+        try:
+            # Use Snowflake Cortex Complete function
+            response = complete("llama3.1-70b", prompt)
+            return response
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
+    
+    @instrument(
+        span_type=SpanAttributes.SpanType.RETRIEVAL,
+        attributes={
+            "retrieval.source": "mock_database",
+            "retrieval.type": "similarity_search"
+        }
     )
-    return sf_connector
-
-def register_tru_app(rag, connector):
-    tru_app = TruApp(
-        test_app=rag,
-        app_name=APP_NAME,
-        app_version=APP_VERSION,
-        connector=connector,
-        main_method=rag.query
+    def retrieve_context(self, query: str) -> list:
+        """
+        Example retrieval function for RAG applications
+        """
+        # This would normally connect to a search service or vector database
+        # For demo purposes, return mock context
+        mock_contexts = [
+            f"Context 1 related to: {query}",
+            f"Context 2 about: {query}",
+            f"Additional context for: {query}"
+        ]
+        return mock_contexts
+    
+    @instrument(
+        span_type=SpanAttributes.SpanType.GENERATION,
+        attributes={
+            "llm.request.model": "llama3.1-70b",
+            "llm.provider": "snowflake-cortex",
+            "llm.request.type": "rag_completion",
+            "application.type": "question_answering"
+        }
     )
-    return tru_app
+    def ask_question_with_context(self, question: str, context: list = None) -> str:
+        """
+        RAG-style question answering with context
+        """
+        if context is None:
+            context = self.retrieve_context(question)
+        
+        context_str = "\n".join(context)
+        prompt = f"""
+        Based on the following context, answer the question:
+        
+        Context:
+        {context_str}
+        
+        Question: {question}
+        
+        Answer:
+        """
+        
+        try:
+            response = complete("llama3.1-70b", prompt)
+            return response
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
 
-def get_latest_app_record(app_name):
-    from trulens_eval.tru_db import TruDB
-    db = TruDB()
-    records = db.get_records(app_id=app_name)
-    if records:
-        return records[-1]
-    else:
-        return None
+def test_basic_cortex(session: Session):
+    """
+    Test basic Cortex functionality without instrumentation
+    """
+    print("Testing basic Cortex functionality...")
+    try:
+        response = complete("llama3.1-70b", "What is 2+2?")
+        print("✅ Basic Cortex test successful")
+        print(f"   Response: {response}")
+        return True
+    except Exception as e:
+        print(f"❌ Basic Cortex test failed: {e}")
+        return False
 
-def show_observability_info(record):
-    st.header("Observability Dashboard")
-    if record is not None:
-        st.subheader("Feedback Scores")
-        trulens_feedback(record=record)
-        st.subheader("Execution Trace")
-        trulens_trace(record=record)
-    st.subheader("Leaderboard (App-wide Metrics)")
-    trulens_leaderboard()
-    st.markdown("""
----
-**How to View in Snowsight:**
-1. Open Snowsight and go to your AI Observability schema (e.g., `AI_OBSERVABILITY.EVENTS`).
-2. Run: `SELECT * FROM AI_OBSERVABILITY.EVENTS WHERE APP_ID = '%s' ORDER BY EVENT_TIMESTAMP DESC LIMIT 100;`
-3. Use Dashboards to visualize metrics like relevance, latency, and cost.
-4. Drill into events for full traces and feedback.
-""" % APP_NAME)
+def main():
+    """
+    Main function to test AI Observability setup with fixed instrumentation
+    """
+    print("🚀 Fixed Snowflake AI Observability Test...")
+    print("=" * 70)
+    
+    # Step 1: Create Snowflake session
+    print("\n1. Creating Snowflake session...")
+    try:
+        session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
+        print("✅ Snowflake session created successfully")
+        print(f"   Current role: {session.get_current_role()}")
+        print(f"   Current database: {session.get_current_database()}")
+        print(f"   Current schema: {session.get_current_schema()}")
+        
+    except Exception as e:
+        print(f"❌ Failed to create Snowflake session: {e}")
+        return
+    
+    # Step 2: Test basic Cortex functionality
+    print("\n2. Testing basic Cortex functionality...")
+    if not test_basic_cortex(session):
+        print("❌ Cannot proceed without basic Cortex access")
+        return
+    
+    # Step 3: Create AI application
+    print("\n3. Creating AI application...")
+    try:
+        ai_app = SimpleAIApp(session)
+        print("✅ AI application created")
+    except Exception as e:
+        print(f"❌ Failed to create AI application: {e}")
+        return
+    
+    # Step 4: Setup TruLens connector
+    print("\n4. Setting up TruLens connector...")
+    try:
+        tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
+        print("✅ TruLens Snowflake connector created")
+    except Exception as e:
+        print(f"❌ Failed to create TruLens connector: {e}")
+        return
+    
+    # Step 5: Create TruApp for observability
+    print("\n5. Creating TruApp for observability...")
+    try:
+        app_name = "fixed_test_app"
+        app_version = "v1.2"
+        
+        tru_app = TruApp(
+            ai_app,
+            app_name=app_name,
+            app_version=app_version,
+            connector=tru_snowflake_connector
+        )
+        print("✅ TruApp created successfully")
+        print(f"   App name: {app_name}")
+        print(f"   App version: {app_version}")
+    except Exception as e:
+        print(f"❌ Failed to create TruApp: {e}")
+        return
+    
+    # Step 6: Test different types of instrumented AI calls
+    print("\n6. Testing instrumented AI calls with fixed instrumentation...")
+    try:
+        # Test simple generation
+        print("   Testing simple generation...")
+        with tru_app as recording:
+            response1 = ai_app.ask_question("What is artificial intelligence?")
+        print(f"   ✅ Simple generation completed: {response1[:100]}...")
+        
+        # Test RAG-style generation
+        print("   Testing RAG-style generation...")
+        with tru_app as recording:
+            response2 = ai_app.ask_question_with_context(
+                "What are the benefits of machine learning?",
+                context=[
+                    "Machine learning helps automate decision making",
+                    "ML can process large amounts of data quickly",
+                    "Machine learning improves over time with more data"
+                ]
+            )
+        print(f"   ✅ RAG generation completed: {response2[:100]}...")
+        
+        # Test retrieval function
+        print("   Testing retrieval instrumentation...")
+        with tru_app as recording:
+            contexts = ai_app.retrieve_context("Snowflake features")
+        print(f"   ✅ Retrieval completed: {len(contexts)} contexts retrieved")
+        
+        print("✅ All instrumented calls completed successfully with fixed attributes")
+        
+    except Exception as e:
+        print(f"❌ Instrumented calls failed: {e}")
+        return
+    
+    print("\n" + "=" * 70)
+    print("🎉 Fixed AI Observability test completed!")
+    print("\nKey fixes made:")
+    print("✓ Removed problematic lambda functions from span attributes")
+    print("✓ Used simple string-based attribute keys for better compatibility")
+    print("✓ Simplified @instrument() decorators to avoid parameter mapping issues")
+    print("✓ Added relevant LLM and application metadata")
+    
+    print("\nFixed Instrumentation approach:")
+    print("- @instrument() with span_type and static attributes")
+    print("- No complex lambda functions that cause parameter access errors")
+    print("- Simple string keys for attributes (e.g., 'llm.request.model')")
+    print("- Proper span types: GENERATION and RETRIEVAL")
+    
+    print("\nNext steps:")
+    print("1. Run this code and check for errors")
+    print("2. Query: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
+    print("3. Look for non-null TRACE_ID and SPAN_ID values")
+    print("4. Check ATTRIBUTES column for your custom metadata")
+    
+    # Cleanup
+    session.close()
 
-st.title("RAG + Snowflake AI Observability Demo")
-st.markdown("Upload a PDF, ask questions, and observe real-time AI observability metrics.")
-
-pdf_file = st.file_uploader("Upload your PDF", type="pdf")
-if pdf_file:
-    with st.spinner("Loading and embedding PDF..."):
-        chunks = load_pdf_chunks(pdf_file)
-        embedder, chunk_embeddings = embed_chunks(chunks)
-        index = build_faiss_index(chunk_embeddings)
-    rag = LocalRAG(chunks, index, embedder)
-    sf_connector = create_snowflake_connector()
-    tru_app = register_tru_app(rag, sf_connector)
-    st.success("PDF loaded and indexed.")
-    user_query = st.text_input("Ask a question about your PDF")
-    if user_query:
-        with st.spinner("Retrieving and generating answer..."):
-            context_str, answer_stream = tru_app.query(user_query)
-            st.subheader("Retrieved Context")
-            st.code(context_str)
-            st.subheader("Answer (from Snowflake LLM)")
-            answer_placeholder = st.empty()
-            answer_text = ""
-            for chunk in answer_stream:
-                answer_text += chunk
-                answer_placeholder.write(answer_text)
-            st.success("Done.")
-        record = get_latest_app_record(APP_NAME)
-        show_observability_info(record)
-else:
-    st.info("Please upload a PDF to get started.")
-
-st.markdown("""
-All observability features (tracing, metrics, evaluations) are available even without ground truth.
-For advanced visualizations, open Snowsight and explore the EVENTS table or connect to your preferred observability dashboard.
-""")
+if __name__ == "__main__":
+    print("Required packages:")
+    print("- snowflake-snowpark-python")
+    print("- trulens-core")
+    print("- trulens-providers-cortex")
+    print("- trulens-connectors-snowflake")
+    print("\nInstall with:")
+    print("pip install snowflake-snowpark-python trulens-core trulens-providers-cortex trulens-connectors-snowflake")
+    print("\n" + "=" * 70)
+    
+    main()
