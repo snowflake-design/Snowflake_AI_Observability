@@ -119,7 +119,7 @@ import pandas as pd
 
 # Create test data in memory only
 test_data = pd.DataFrame({
-    'QUERY': [
+    'query': [  # Use lowercase 'query' to match dataset_spec
         "What is machine learning?",
         "Explain cloud computing", 
         "What is Python programming?"
@@ -129,13 +129,14 @@ test_data = pd.DataFrame({
 print("Creating run with in-memory dataset...")
 
 # Create run configuration using DATAFRAME (not TABLE)
+# Fix: Make sure dataset_spec matches DataFrame column names
 run_config = RunConfig(
     run_name="basic_test_run",
     dataset_name="memory_dataset",  # Just a name, not a real table
     description="Basic LLM test run",
     source_type="DATAFRAME",  # Use DATAFRAME instead of TABLE
     dataset_spec={
-        "input": "QUERY",
+        "input": "query",  # This must match the DataFrame column name exactly
     },
 )
 
@@ -147,27 +148,27 @@ try:
     
     # Start the run with the in-memory dataframe
     print("Starting run with in-memory data...")
+    print(f"DataFrame columns: {list(test_data.columns)}")  # Debug: show column names
+    print(f"DataFrame shape: {test_data.shape}")  # Debug: show data shape
+    
     run.start(input_df=test_data)  # Pass the dataframe directly
     print("✅ Run completed successfully - spans should be ingested")
     
 except Exception as e:
     print(f"❌ Run creation failed: {e}")
-    print("Trying manual approach with run context...")
+    print("Trying simplified manual approach...")
     
-    # Alternative: Create run but use manual calls
-    try:
-        run: Run = tru_llm_app.add_run(run_config=run_config)
-        
-        # Manual calls within run context
-        for i, query in enumerate(test_data['QUERY'], 1):
-            print(f"\nManual Query {i}: {query}")
+    # Fallback: Just use context manager without formal run
+    test_queries = ["What is AI?", "What is ML?", "What is Python?"]
+    for i, query in enumerate(test_queries, 1):
+        print(f"\nFallback Query {i}: {query}")
+        try:
             with tru_llm_app as recording:
                 response = llm_app.query(query)
             print(f"Response: {response[:100]}...")
-            print("✅ Manual trace captured")
-            
-    except Exception as e2:
-        print(f"❌ Manual approach also failed: {e2}")
+            print("✅ Fallback trace captured")
+        except Exception as e2:
+            print(f"❌ Fallback failed: {e2}")
 
 # Wait for ingestion
 print("\n⏳ Waiting for trace ingestion...")
