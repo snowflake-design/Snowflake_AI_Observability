@@ -107,7 +107,7 @@ connector = SnowflakeConnector(snowpark_session=session)
 
 # Register the app in Snowflake (Following Official Documentation)
 tru_app = TruApp(
-    test_app=test_app,
+    test_app,  # First positional argument - the app instance
     app_name="rag_evaluation_app", 
     app_version="v1",
     connector=connector,
