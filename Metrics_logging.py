@@ -23,7 +23,7 @@ except:
 
 print(f"Current context: {session.get_current_database()}.{session.get_current_schema()}")
 
-# RAG Application Class (Following Official Snowflake Documentation)
+# RAG Application Class (Updated per Official Documentation)
 class RAGApplication:
     def __init__(self):
         self.model = "mistral-large2"
@@ -88,7 +88,13 @@ Answer:"""
         except Exception as e:
             return f"Error generating response: {str(e)}"
 
-    @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
+    @instrument(
+        span_type=SpanAttributes.SpanType.RECORD_ROOT,
+        attributes={
+            SpanAttributes.RECORD_ROOT.INPUT: "query",
+            SpanAttributes.RECORD_ROOT.OUTPUT: "return",
+        }
+    )
     def answer_query(self, query: str) -> str:
         """Main entry point for the RAG application."""
         context_str = self.retrieve_context(query)
@@ -105,13 +111,13 @@ print(f"Test successful: {test_response[:100]}...")
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# Register the app in Snowflake (Following Official Documentation)
+# Register the app in Snowflake (Updated per Official Documentation)
 tru_app = TruApp(
-    test_app,  # First positional argument - the app instance
+    test_app,  # Application instance
     app_name="rag_evaluation_app", 
     app_version="v1",
     connector=connector,
-    main_method=test_app.answer_query  # Official docs specify this
+    main_method=test_app.answer_query  # Entry point method
 )
 
 print("Application registered successfully")
@@ -132,7 +138,7 @@ test_data = pd.DataFrame({
 
 print(f"Created dataset with {len(test_data)} test queries")
 
-# Create run configuration (Following Official Documentation Format)
+# Create run configuration (Updated per Official Documentation)
 run_config = RunConfig(
     run_name="test_run_1",
     description="RAG evaluation test run",
@@ -154,35 +160,60 @@ print(f"Dataset spec: {run_config.dataset_spec}")
 run = tru_app.add_run(run_config=run_config)
 print("Run added successfully")
 
-# Start the run (Following Official Documentation)
+# Check run status before starting
+initial_status = run.get_status()
+print(f"Initial run status: {initial_status}")
+
+# Start the run execution
 print("Starting run execution...")
 run.start(input_df=test_data)
 print("Run execution completed")
 
-# Check run status
+# Check run status after execution
 status = run.get_status()
-print(f"Run status: {status}")
+print(f"Run status after execution: {status}")
 
-# Compute metrics (Following Official Documentation)
-print("Computing evaluation metrics...")
-run.compute_metrics(metrics=[
-    "answer_relevance",
-    "context_relevance",
-    "groundedness",
-])
+# Wait for invocation to complete before computing metrics
+print("Waiting for invocation to complete...")
+while True:
+    current_status = run.get_status()
+    print(f"Current status: {current_status}")
+    
+    if current_status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
+        print("Invocation completed, ready to compute metrics")
+        break
+    elif current_status == "INVOCATION_FAILED":
+        print("Invocation failed, cannot compute metrics")
+        break
+    elif current_status == "INVOCATION_IN_PROGRESS":
+        print("Invocation still in progress, waiting...")
+        time.sleep(10)
+    else:
+        print(f"Unexpected status: {current_status}")
+        break
 
-print("Metrics computation initiated successfully")
-print("Note: run.compute_metrics() is an asynchronous non-blocking function")
+# Compute metrics (Updated per Official Documentation)
+if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
+    print("Computing evaluation metrics...")
+    run.compute_metrics(metrics=[
+        "coherence",
+        "answer_relevance",
+        "groundedness",
+        "context_relevance",
+        "correctness",
+    ])
+    print("Metrics computation initiated successfully")
+    print("Note: run.compute_metrics() is an asynchronous non-blocking function")
 
-# View results (Following Official Documentation Instructions)
-print("\n=== Viewing Results ===")
-print("To view evaluation results:")
-print("1. Navigate to Snowsight")
-print("2. Select AI & ML")
-print("3. Select Evaluations")
-print("4. Select your application to view runs")
-print("5. Select the run to view aggregated results")
-print("6. Select individual records to view detailed traces")
+# View run metadata
+print("\n=== Run Metadata ===")
+run.describe()
+
+# Optional: List all runs for this application
+print("\n=== All Runs for Application ===")
+all_runs = tru_app.list_runs()
+for run_info in all_runs:
+    print(f"Run: {run_info}")
 
 # Optional: Check if traces were created
 try:
@@ -225,13 +256,25 @@ try:
 except Exception as e:
     print(f"Verification query failed: {e}")
 
+# View evaluation results instructions
+print("\n=== Viewing Results ===")
+print("To view evaluation results:")
+print("1. Navigate to Snowsight")
+print("2. Select AI & ML")
+print("3. Select Evaluations")
+print("4. Select your application to view runs")
+print("5. Select the run to view aggregated results")
+print("6. Select individual records to view detailed traces")
+print("7. To compare runs, select multiple runs and click Compare")
+
 print("\n" + "="*60)
 print("RAG EVALUATION SETUP COMPLETE")
 print("="*60)
-print("✅ App instrumented following official documentation")
+print("✅ App instrumented with proper span attributes")
 print("✅ App registered with TruApp and main_method specified") 
-print("✅ Run created with proper dataset_spec format")
-print("✅ Run executed successfully")
-print("✅ Metrics computation initiated")
+print("✅ Run created with correct dataset_spec format")
+print("✅ Run executed with proper status checking")
+print("✅ Metrics computation initiated after invocation completion")
+print("✅ Enhanced with run metadata and status monitoring")
 print("\n📊 Check Snowsight AI & ML -> Evaluations for results")
-print("🕐 Metrics appear automatically via asynchronous processing")
+print("🕐 Metrics computed asynchronously in background")
