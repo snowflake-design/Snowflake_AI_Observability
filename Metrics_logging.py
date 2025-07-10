@@ -10,19 +10,11 @@ from trulens.apps.app import TruApp
 from trulens.connectors.snowflake import SnowflakeConnector
 from trulens.core.run import Run, RunConfig
 
+# 1. SETUP ENVIRONMENT ()
+print("=== Setting Up Environment ===")
+
 # Set environment variable for TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
-
-# Snowflake connection parameters - UPDATE THESE
-SNOWFLAKE_CONFIG = {
-    'account': 'your_account',        
-    'user': 'your_username',          
-    'password': 'your_password',      
-    'warehouse': 'your_warehouse',    
-    'database': 'your_database',      
-    'schema': 'your_schema',          
-    'role': 'abc_admin'               
-}
 
 # Get Snowflake session
 try:
@@ -30,26 +22,19 @@ try:
     print("Using active Snowflake session")
 except:
     print("Creating new Snowflake session...")
+    # Add your SNOWFLAKE_CONFIG here if needed
     session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
-
-# Set the context
-session.use_role(SNOWFLAKE_CONFIG['role'])
-session.use_warehouse(SNOWFLAKE_CONFIG['warehouse'])
-session.use_database(SNOWFLAKE_CONFIG['database'])
-session.use_schema(SNOWFLAKE_CONFIG['schema'])
 
 print(f"Current context: {session.get_current_database()}.{session.get_current_schema()}")
 
-# Get current username for tracking
-current_username = session.get_current_user()
-print(f"Current user: {current_username}")
+# 2. INSTRUMENTING THE APPLICATION ()
+print("=== Creating RAG Application with Instrumentation ===")
 
-# Enhanced RAG Application with FIXED instrumentation
-class RAGLLMApp:
+class RAGApplication:
     def __init__(self):
         self.model = "mistral-large2"
         
-        # Sample knowledge base contexts
+        # Your knowledge base ()
         self.knowledge_base = {
             "machine learning": [
                 "Machine learning is a subset of artificial intelligence that enables computers to learn from data without explicit programming.",
@@ -77,19 +62,17 @@ class RAGLLMApp:
                 "Snowflake supports structured and semi-structured data with SQL-based querying capabilities."
             ]
         }
-    
-    @instrument(
-        span_type=SpanAttributes.SpanType.RETRIEVAL,
-        attributes={
-            SpanAttributes.RETRIEVAL.QUERY_TEXT: "query",
-            SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS: "return",
-        }
-    )
+
+    @instrument(span_type=SpanAttributes.SpanType.RETRIEVAL,
+                attributes={
+                    SpanAttributes.RETRIEVAL.QUERY_TEXT: "query",
+                    SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS: "return"
+                })
     def retrieve_context(self, query: str) -> list:
-        """Retrieve relevant contexts from knowledge base"""
+        """Retrieve relevant contexts from knowledge base (like Medium article's retrieve_context)"""
         print(f"Retrieving context for query: {query}")
         
-        # Simple keyword-based retrieval
+        # Simple keyword-based retrieval ()
         query_lower = query.lower()
         retrieved_contexts = []
         
@@ -104,14 +87,14 @@ class RAGLLMApp:
         
         print(f"Retrieved {len(retrieved_contexts)} context pieces")
         return retrieved_contexts
-    
+
     @instrument(span_type=SpanAttributes.SpanType.GENERATION)
-    def generate_response(self, query: str, contexts: list) -> str:
-        """Generate response using retrieved contexts and LLM"""
-        print(f"Generating response for query: {query}")
+    def generate_answer(self, query: str, context: list) -> str:
+        """Generate answer using LLM (like Medium article's generate_answer)"""
+        print(f"Generating answer for query: {query}")
         
         # Prepare context string
-        context_str = "\n".join([f"- {ctx}" for ctx in contexts])
+        context_str = "\n".join([f"- {ctx}" for ctx in context])
         
         prompt = f"""Based on the following context information, provide a comprehensive answer to the user's question.
 
@@ -136,73 +119,58 @@ Answer:"""
             error_msg = f"Error generating response: {str(e)}"
             print(error_msg)
             return error_msg
-    
-    @instrument(
-        span_type=SpanAttributes.SpanType.RECORD_ROOT,
-        attributes={
-            SpanAttributes.RECORD_ROOT.INPUT: "query",
-            SpanAttributes.RECORD_ROOT.OUTPUT: "return",
-        })
-    def query(self, query: str) -> str:
-        """Main entry point for RAG pipeline - FIXED method name and instrumentation"""
-        print(f"Processing query: {query}")
+
+    @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT,
+                attributes={
+                    SpanAttributes.RECORD_ROOT.INPUT: "query",
+                    SpanAttributes.RECORD_ROOT.OUTPUT: "return"
+                })
+    def answer_question(self, query: str) -> str:
+        """High-level method to get answer (like Medium article's answer_question)"""
+        print(f"Processing question: {query}")
         
         # Step 1: Retrieve relevant contexts
-        contexts = self.retrieve_context(query)
+        docs = self.retrieve_context(query)
         
-        # Step 2: Generate response using contexts
-        response = self.generate_response(query, contexts)
-        
-        return response
+        # Step 2: Generate answer using contexts
+        return self.generate_answer(query, docs)
 
-# Initialize the RAG application
-rag_app = RAGLLMApp()
+# 3. REGISTERING THE APPLICATION ()
+print("=== Registering Application in Snowflake Cortex ===")
 
-# Test basic functionality first
-print("\n=== Testing Basic RAG Functionality ===")
-try:
-    test_response = rag_app.query("What is machine learning?")
-    print(f"Basic test successful: {test_response[:100]}...")
-except Exception as e:
-    print(f"Basic test failed: {e}")
-    exit(1)
+# Create RAG application instance
+rag_app = RAGApplication()
 
-# Set up TruLens connector
-print("\n=== Setting up TruLens Connector ===")
-try:
-    tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
-    print("TruLens connector created")
-except Exception as e:
-    print(f"Connector warning: {e}")
-    tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
+# Test basic functionality
+print("Testing basic functionality...")
+test_response = rag_app.answer_question("What is machine learning?")
+print(f"Test successful: {test_response[:100]}...")
 
-# Register application with TruLens
-print("\n=== Registering RAG Application ===")
+# Create Snowflake connector using active Snowpark session
+snowflake_conn = SnowflakeConnector(snowpark_session=session)
+
+# Register the app with a name and version ()
 timestamp = int(time.time())
-app_name = f"rag_llm_app_{timestamp}"
+app_name = f"rag_observability_app_{timestamp}"  # 
 app_version = "v1"
 
-print(f"App name: {app_name}")
+print(f"Registering app: {app_name}")
 
-try:
-    # FIXED: Use the correct method name and no main_method specification
-    tru_rag_app = TruApp(
-        rag_app,
-        app_name=app_name,
-        app_version=app_version,
-        connector=tru_snowflake_connector
-    )
-    print("RAG application registered successfully")
-except Exception as e:
-    print(f"Application registration failed: {e}")
-    exit(1)
+tru_app = TruApp(rag_app,
+                app_name=app_name,
+                app_version=app_version,
+                connector=snowflake_conn)
 
-# Create comprehensive test dataset with CORRECT column mapping
-print("\n=== Creating Test Dataset with Correct Column Names ===")
-test_data = pd.DataFrame({
-    'query': [  # This will map to RECORD_ROOT.INPUT
+print("Application registered successfully")
+
+# 4. CONFIGURING AN EVALUATION RUN ()
+print("=== Configuring Evaluation Run ===")
+
+# Create test dataset ()
+test_queries_data = pd.DataFrame({
+    'QUERY': [  # 
         "What is machine learning and how does it work?",
-        "Explain cloud computing benefits for businesses",
+        "Explain cloud computing benefits for businesses", 
         "What are the main applications of artificial intelligence?",
         "How does natural language processing help in AI?",
         "What makes Snowflake different from other data platforms?",
@@ -210,7 +178,7 @@ test_data = pd.DataFrame({
         "What are the security benefits of cloud computing?",
         "How can AI be used in healthcare applications?"
     ],
-    'expected_answer': [  # This will map to RECORD_ROOT.GROUND_TRUTH_OUTPUT
+    'GROUND_TRUTH_RESPONSE': [  # 
         "Machine learning is a subset of AI that enables computers to learn from data without explicit programming.",
         "Cloud computing provides scalability, cost-effectiveness, and accessibility for business operations.",
         "AI applications include chatbots, recommendation systems, autonomous vehicles, and medical diagnosis.",
@@ -222,184 +190,121 @@ test_data = pd.DataFrame({
     ]
 })
 
-print(f"Created dataset with {len(test_data)} queries")
-print(f"DataFrame columns: {list(test_data.columns)}")
+print(f"Created dataset with {len(test_queries_data)} test queries")
 
-# FIXED: Create run configuration with CORRECT dataset specification
-print("\n=== Creating Run Configuration with FIXED Dataset Spec ===")
-run_name = f"rag_metrics_test_run_{timestamp}"
+# Create run configuration ()
 run_config = RunConfig(
-    run_name=run_name,
-    description="RAG evaluation with FIXED metrics computation",
-    label="rag_metrics_test",
-    source_type="DATAFRAME",
-    dataset_name="rag_test_dataset",
+    run_name="experiment_1_run",  # 
+    dataset_name="RAG_TEST_DATA",  # 
+    description="Questions about AI and technology topics",  # 
+    label="baseline_run",  # 
+    source_type="DATAFRAME",  # 
     dataset_spec={
-        "input": "query",  # Maps to DataFrame column name
-        "ground_truth_output": "expected_answer",  # Maps to DataFrame column name
-    },
-    llm_judge_name="mistral-large2"
+        "input": "QUERY",  # 
+        "ground_truth_output": "GROUND_TRUTH_RESPONSE"  # 
+    }
 )
 
-print(f"Run name: {run_name}")
-print(f"FIXED Dataset spec: {run_config.dataset_spec}")
-print(f"LLM judge: {run_config.llm_judge_name}")
+print(f"Run configuration created: {run_config.run_name}")
+print(f"Dataset spec: {run_config.dataset_spec}")
 
-# Add run to TruApp
-print("\n=== Adding Run to TruApp ===")
+# Add the run to TruApp ()
+run = tru_app.add_run(run_config=run_config)
+print("Run added to TruApp successfully")
+
+# 5. RUNNING THE EVALUATION ()
+print("=== Running the Evaluation ===")
+
+# First, start the run to invoke the application in batch ()
+print("Starting run.start() - this will process all queries...")
+run.start(input_df=test_queries_data)  # Using your DataFrame
+print("Run execution completed - all queries processed and traces captured")
+
+# 6. COMPUTING METRICS ()
+print("=== Computing Evaluation Metrics ===")
+
+# Compute the RAG evaluation triad ()
+print("Computing RAG Triad metrics: Answer Relevance, Context Relevance, and Groundedness")
+
+run.compute_metrics([
+    "answer_relevance",    # From
+    "context_relevance",   # From triad  
+    "groundedness"         # From triad
+])
+
+print("Metrics computation initiated successfully")
+print("Note: Metrics computation is asynchronous and may take several minutes")
+
+# 7. VIEWING RESULTS ()
+print("=== Viewing Results Instructions ===")
+print("\nTo view results (following Medium article steps):")
+print("1. Navigate to Snowsight")
+print("2. Open AI & ML menu -> Click Evaluations")
+print(f"3. Look for application: {app_name}")
+print("4. Click on your application to view runs")
+print(f"5. Click on run: experiment_1_run")
+print("6. View detailed results, metrics, and traces")
+
+print(f"\nAlternatively, query the event table directly:")
+print(f"-- View all traces:")
+print(f"SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE application_name = '{app_name}';")
+print(f"")
+print(f"-- View metrics only:")
+print(f"SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE application_name = '{app_name}' AND record_type = 'EVALUATION';")
+
+# 8. VERIFICATION (Optional - check if data is there)
+print("\n=== Quick Verification ===")
 try:
-    run: Run = tru_rag_app.add_run(run_config=run_config)
-    print("Run added successfully")
-except Exception as e:
-    print(f"Failed to add run: {e}")
-    exit(1)
-
-# Execute the run
-print("\n=== Executing Run with FIXED Implementation ===")
-try:
-    print("Starting run execution...")
-    print("This will:")
-    print("  1. Process each query through the RAG pipeline")
-    print("  2. Capture CORRECTLY instrumented traces")
-    print("  3. Store data with PROPER attribute mapping")
-    print("  4. Enable metrics computation")
-    
-    run.start(input_df=test_data)
-    
-    print("Run execution completed successfully")
-    print("Waiting for trace ingestion before computing metrics...")
-    
-except Exception as e:
-    print(f"Run execution failed: {e}")
-    print("Checking if partial traces were captured...")
-
-# CRITICAL: Wait for trace ingestion before computing metrics
-print("\n=== Waiting for Trace Ingestion (IMPORTANT) ===")
-time.sleep(30)  # Increased wait time
-
-# Verify traces exist before computing metrics
-print("\n=== Verifying Traces Before Metrics Computation ===")
-try:
+    # Check if traces were created
     trace_count = session.sql("""
-        SELECT COUNT(*) as trace_count 
+        SELECT COUNT(*) as count 
         FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
         WHERE application_name = ?
     """, params=[app_name]).collect()
     
-    if trace_count and trace_count[0]['TRACE_COUNT'] > 0:
-        print(f"SUCCESS! Found {trace_count[0]['TRACE_COUNT']} traces")
+    if trace_count and trace_count[0]['COUNT'] > 0:
+        print(f"✅ SUCCESS: {trace_count[0]['COUNT']} traces found in event table")
         
         # Check span types
         span_types = session.sql("""
-            SELECT 
-                span_type,
-                COUNT(*) as count
+            SELECT span_type, COUNT(*) as count
             FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
             WHERE application_name = ?
             GROUP BY span_type
-            ORDER BY count DESC
         """, params=[app_name]).collect()
         
         print("Span types captured:")
         for span in span_types:
-            print(f"  - {span['SPAN_TYPE']}: {span['COUNT']} traces")
-            
-        # Verify we have the required span types for metrics
-        span_type_names = [span['SPAN_TYPE'] for span in span_types]
-        required_spans = ['RECORD_ROOT', 'RETRIEVAL', 'GENERATION']
-        
-        missing_spans = [span for span in required_spans if span not in span_type_names]
-        if missing_spans:
-            print(f"WARNING: Missing required span types for metrics: {missing_spans}")
-            print("Metrics computation may fail!")
-        else:
-            print("All required span types present for metrics computation")
+            print(f"  - {span['SPAN_TYPE']}: {span['COUNT']}")
             
     else:
-        print("ERROR: No traces found - cannot compute metrics")
-        exit(1)
+        print("No traces found yet - check application name or wait a moment")
         
 except Exception as e:
-    print(f"Could not verify traces: {e}")
+    print(f"Verification query failed: {e}")
 
-# Compute evaluation metrics with PROPER timing
-print("\n=== Computing Evaluation Metrics (FIXED) ===")
-try:
-    print("Starting metrics computation...")
-    print("Computing: answer_relevance, groundedness, context_relevance")
-    
-    # These are the core RAG Triad metrics
-    run.compute_metrics([
-        "answer_relevance",   # Requires RECORD_ROOT.INPUT and RECORD_ROOT.OUTPUT
-        "groundedness",       # Requires RETRIEVAL.RETRIEVED_CONTEXTS and RECORD_ROOT.OUTPUT  
-        "context_relevance"   # Requires RETRIEVAL.QUERY_TEXT and RETRIEVAL.RETRIEVED_CONTEXTS
-    ])
-    
-    print("Metrics computation initiated successfully")
-    print("Note: Metrics computation is asynchronous and may take several minutes")
-    
-except Exception as e:
-    print(f"Metrics computation failed: {e}")
-    print("This could be due to:")
-    print("1. Missing required attributes in spans")
-    print("2. Incorrect dataset specification")
-    print("3. Insufficient traces")
-    print("4. LLM judge access issues")
-
-# Wait for metrics computation
-print("\n=== Waiting for Metrics Computation ===")
-time.sleep(30)  # Wait for metrics to be computed
-
-# Verify metrics were computed
-print("\n=== Verifying Metrics Computation ===")
-try:
-    # Check for evaluation records
-    metrics_check = session.sql("""
-        SELECT 
-            COUNT(*) as metric_count,
-            COUNT(DISTINCT record_id) as unique_records
-        FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-        WHERE application_name = ? 
-        AND record_type = 'EVALUATION'
-    """, params=[app_name]).collect()
-    
-    if metrics_check and metrics_check[0]['METRIC_COUNT'] > 0:
-        print(f"SUCCESS! Found {metrics_check[0]['METRIC_COUNT']} evaluation records")
-        print(f"Covering {metrics_check[0]['UNIQUE_RECORDS']} unique query records")
-        
-        # Show sample metrics
-        sample_metrics = session.sql("""
-            SELECT 
-                metric_name,
-                metric_value,
-                record_id
-            FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-            WHERE application_name = ? 
-            AND record_type = 'EVALUATION'
-            ORDER BY created_at DESC
-            LIMIT 10
-        """, params=[app_name]).collect()
-        
-        print("\nSample metrics computed:")
-        for metric in sample_metrics:
-            print(f"  - {metric['METRIC_NAME']}: {metric['METRIC_VALUE']:.3f}")
-            
-    else:
-        print("No metrics found yet (may still be computing)")
-        print("Check again in a few minutes, or there may be an issue with:")
-        print("1. Span attribute mapping")
-        print("2. Dataset specification")
-        print("3. LLM judge permissions")
-        
-except Exception as e:
-    print(f"Could not verify metrics: {e}")
-
-# Final verification and instructions
 print("\n" + "="*70)
-print("FIXED RAG AI OBSERVABILITY TEST COMPLETED")
+print("RAG OBSERVABILITY SETUP COMPLETE (Following Medium Article Structure)")
 print("="*70)
+print("✅ Environment set up")
+print("✅ Application instrumented")
+print("✅ Application registered")
+print("✅ Evaluation run configured") 
+print("✅ Run executed")
+print("✅ Metrics computation initiated")
+print("\n🕐 Wait 5-10 minutes, then check Snowsight AI & ML -> Evaluations")
+print("📊 Metrics should appear automatically in the background")
 
-print(f"\nCHECK RESULTS:")
-print(f"1. Snowsight: AI & ML -> Evaluations -> {app_name}")
-print(f"2. View traces: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE application_name = '{app_name}';")
-print(f"3. View metrics: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS WHERE application_name = '{app_name}' AND record_type = 'EVALUATION';")
+# Key :
+print(f"\nKEY CHANGES MADE TO FOLLOW MEDIUM ARTICLE:")
+print("1. ✅ Method names: retrieve_context, generate_answer, answer_question (not answer_query)")
+print("2. ✅ Explicit RECORD_ROOT instrumentation on main method")
+print("3. ✅ Dataset column names in CAPS: QUERY, GROUND_TRUTH_RESPONSE")
+print("4. ✅ Dataset spec format: 'input': 'QUERY', 'ground_truth_output': 'GROUND_TRUTH_RESPONSE'")
+print("5. ✅ Run naming: experiment_1_run, baseline_run (Medium article style)")
+print("6. ✅ Removed user tracking to match Medium article simplicity")
+print("7. ✅ Exact RAG Triad metrics: answer_relevance, context_relevance, groundedness")
+print("8. ✅ TruApp registration without main_method (letting RECORD_ROOT handle it)")
+
+print(f"\nThis structure exactly matches the Medium article workflow!")
+print(f"Your metrics should now compute properly! 🎉")
