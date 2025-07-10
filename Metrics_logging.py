@@ -23,7 +23,6 @@ except:
 
 print(f"Current context: {session.get_current_database()}.{session.get_current_schema()}")
 
-# RAG Application Class (Updated per Official Documentation)
 class RAGApplication:
     def __init__(self):
         self.model = "mistral-large2"
@@ -88,13 +87,7 @@ Answer:"""
         except Exception as e:
             return f"Error generating response: {str(e)}"
 
-    @instrument(
-        span_type=SpanAttributes.SpanType.RECORD_ROOT,
-        attributes={
-            SpanAttributes.RECORD_ROOT.INPUT: "query",
-            SpanAttributes.RECORD_ROOT.OUTPUT: "return",
-        }
-    )
+    @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
     def answer_query(self, query: str) -> str:
         """Main entry point for the RAG application."""
         context_str = self.retrieve_context(query)
@@ -106,175 +99,181 @@ test_app = RAGApplication()
 # Test basic functionality
 print("Testing basic functionality...")
 test_response = test_app.answer_query("What is machine learning?")
-print(f"Test successful: {test_response[:100]}...")
+print(f"Test successful: {test_response[:100] if test_response else 'No response'}...")
 
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# Register the app in Snowflake (Updated per Official Documentation)
+# Register the app - CRITICAL: Use unique app name
+app_name = f"rag_metrics_app_{int(time.time())}"
 tru_app = TruApp(
-    test_app,  # Application instance
-    app_name="rag_evaluation_app", 
-    app_version="v1",
+    test_app,
+    app_name=app_name, 
+    app_version="v1.0",
     connector=connector,
-    main_method=test_app.answer_query  # Entry point method
+    main_method=test_app.answer_query
 )
 
-print("Application registered successfully")
+print(f"Application registered successfully: {app_name}")
 
-# Create test dataset
+# Create test dataset - CRITICAL: Simple, clear data
 test_data = pd.DataFrame({
-    'user_query_field': [
-        "What is machine learning and how does it work?",
-        "Explain cloud computing benefits for businesses",
-        "What are the main applications of artificial intelligence?"
+    'query': [
+        "What is machine learning?",
+        "What are cloud computing benefits?", 
+        "What are AI applications?"
     ],
-    'golden_answer_field': [
-        "Machine learning is a subset of AI that enables computers to learn from data without explicit programming.",
-        "Cloud computing provides scalability, cost-effectiveness, and accessibility for business operations.", 
-        "AI applications include chatbots, recommendation systems, autonomous vehicles, and medical diagnosis."
+    'expected_answer': [
+        "Machine learning enables computers to learn from data without explicit programming.",
+        "Cloud computing provides scalability, cost-effectiveness, and accessibility.",
+        "AI applications include chatbots, recommendation systems, and autonomous vehicles."
     ]
 })
 
 print(f"Created dataset with {len(test_data)} test queries")
 
-# Create run configuration (Updated per Official Documentation)
+# CRITICAL FIX: Proper dataset_spec mapping
 run_config = RunConfig(
-    run_name="test_run_1",
-    description="RAG evaluation test run",
-    label="rag_test",
+    run_name=f"metrics_run_{int(time.time())}",
+    description="Metrics computation test run",
+    label="metrics_test",
     source_type="DATAFRAME",
-    dataset_name="My test dataframe name",
+    dataset_name="Metrics test dataset",
     dataset_spec={
-        "RETRIEVAL.QUERY_TEXT": "user_query_field",
-        "RECORD_ROOT.INPUT": "user_query_field", 
-        "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "golden_answer_field",
+        # Map dataset columns to span attributes - THIS IS THE KEY FIX
+        "RETRIEVAL.QUERY_TEXT": "query",           # Maps to query column
+        "RECORD_ROOT.INPUT": "query",              # Maps to query column  
+        "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",  # Maps to expected_answer column
     },
     llm_judge_name="mistral-large2"
 )
 
 print(f"Run configuration created: {run_config.run_name}")
-print(f"Dataset spec: {run_config.dataset_spec}")
+print(f"Dataset spec mapping: {run_config.dataset_spec}")
 
 # Add run to TruApp
 run = tru_app.add_run(run_config=run_config)
 print("Run added successfully")
 
-# Check run status before starting
-initial_status = run.get_status()
-print(f"Initial run status: {initial_status}")
-
-# Start the run execution
+# Start the run
 print("Starting run execution...")
 run.start(input_df=test_data)
 print("Run execution completed")
 
-# Check run status after execution
-status = run.get_status()
-print(f"Run status after execution: {status}")
-
-# Wait for invocation to complete before computing metrics
+# CRITICAL: Wait for proper status
 print("Waiting for invocation to complete...")
-while True:
-    current_status = run.get_status()
-    print(f"Current status: {current_status}")
+max_attempts = 30
+attempt = 0
+
+while attempt < max_attempts:
+    status = run.get_status()
+    print(f"Attempt {attempt + 1}: Status = {status}")
     
-    if current_status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
-        print("Invocation completed, ready to compute metrics")
+    if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
+        print("✅ Ready to compute metrics!")
         break
-    elif current_status == "INVOCATION_FAILED":
-        print("Invocation failed, cannot compute metrics")
-        break
-    elif current_status == "INVOCATION_IN_PROGRESS":
-        print("Invocation still in progress, waiting...")
+    elif status == "INVOCATION_FAILED":
+        print("❌ Invocation failed!")
+        exit(1)
+    else:
         time.sleep(10)
-    else:
-        print(f"Unexpected status: {current_status}")
-        break
+        attempt += 1
 
-# Compute metrics (Updated per Official Documentation)
-if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
-    print("Computing evaluation metrics...")
-    run.compute_metrics(metrics=[
-        "coherence",
-        "answer_relevance",
-        "groundedness",
-        "context_relevance",
-        "correctness",
-    ])
-    print("Metrics computation initiated successfully")
-    print("Note: run.compute_metrics() is an asynchronous non-blocking function")
+if attempt >= max_attempts:
+    print("⚠️ Timeout waiting for completion, trying metrics anyway...")
 
-# View run metadata
-print("\n=== Run Metadata ===")
-run.describe()
+# CRITICAL FIX: Start with basic metrics only
+print("\n=== Computing Basic Metrics ===")
+basic_metrics = ["answer_relevance"]
 
-# Optional: List all runs for this application
-print("\n=== All Runs for Application ===")
-all_runs = tru_app.list_runs()
-for run_info in all_runs:
-    print(f"Run: {run_info}")
-
-# Optional: Check if traces were created
 try:
-    trace_count = session.sql("""
-        SELECT COUNT(*) as count 
-        FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-        WHERE application_name = ?
-    """, params=["rag_evaluation_app"]).collect()
+    print(f"Computing: {basic_metrics}")
+    run.compute_metrics(metrics=basic_metrics)
+    print("✅ Basic metrics computation started")
     
-    if trace_count and trace_count[0]['COUNT'] > 0:
-        print(f"\n✅ SUCCESS: {trace_count[0]['COUNT']} traces found in event table")
+    # Wait and check for results
+    print("Waiting for metric computation...")
+    time.sleep(60)  # Give more time for computation
+    
+    # Check if metrics were computed
+    try:
+        status_after_metrics = run.get_status()
+        print(f"Status after metrics: {status_after_metrics}")
         
-        # Check span types
-        span_types = session.sql("""
-            SELECT span_type, COUNT(*) as count
-            FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-            WHERE application_name = ?
-            GROUP BY span_type
-        """, params=["rag_evaluation_app"]).collect()
+        # Try to add more metrics if first one succeeded
+        print("\n=== Adding More Metrics ===")
+        additional_metrics = ["context_relevance"]
+        run.compute_metrics(metrics=additional_metrics)
+        print("✅ Additional metrics computation started")
         
-        print("Span types captured:")
-        for span in span_types:
-            print(f"  - {span['SPAN_TYPE']}: {span['COUNT']}")
-            
-        # Check for evaluation records
-        eval_count = session.sql("""
-            SELECT COUNT(*) as count 
-            FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-            WHERE application_name = ? AND record_type = 'EVALUATION'
-        """, params=["rag_evaluation_app"]).collect()
-        
-        if eval_count and eval_count[0]['COUNT'] > 0:
-            print(f"✅ METRICS: {eval_count[0]['COUNT']} evaluation records found")
-        else:
-            print("ℹ️  Metrics may still be computing in the background")
-            
-    else:
-        print("No traces found yet")
+    except Exception as e:
+        print(f"Error checking status or adding metrics: {e}")
         
 except Exception as e:
-    print(f"Verification query failed: {e}")
+    print(f"❌ Error computing basic metrics: {e}")
+    print("Common causes:")
+    print("1. Insufficient permissions for Cortex LLM access")
+    print("2. Model 'mistral-large2' not available")
+    print("3. Dataset mapping incorrect")
+    print("4. Missing required span attributes")
 
-# View evaluation results instructions
-print("\n=== Viewing Results ===")
-print("To view evaluation results:")
-print("1. Navigate to Snowsight")
-print("2. Select AI & ML")
-print("3. Select Evaluations")
-print("4. Select your application to view runs")
-print("5. Select the run to view aggregated results")
-print("6. Select individual records to view detailed traces")
-print("7. To compare runs, select multiple runs and click Compare")
+# Alternative: Try with different LLM judge
+print("\n=== Trying Alternative LLM Judge ===")
+try:
+    # Create new run with different judge
+    alt_run_config = RunConfig(
+        run_name=f"alt_metrics_run_{int(time.time())}",
+        description="Alternative LLM judge test",
+        label="alt_metrics_test", 
+        source_type="DATAFRAME",
+        dataset_name="Alt metrics test dataset",
+        dataset_spec={
+            "RETRIEVAL.QUERY_TEXT": "query",
+            "RECORD_ROOT.INPUT": "query",
+            "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
+        },
+        llm_judge_name="llama3.1-70b"  # Try default judge
+    )
+    
+    alt_run = tru_app.add_run(run_config=alt_run_config)
+    alt_run.start(input_df=test_data)
+    
+    # Wait for completion
+    time.sleep(30)
+    alt_status = alt_run.get_status()
+    
+    if alt_status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
+        print("Trying with default LLM judge...")
+        alt_run.compute_metrics(metrics=["answer_relevance"])
+        print("✅ Alternative metrics started")
+    
+except Exception as e:
+    print(f"Alternative approach failed: {e}")
+
+# Final status check
+print("\n=== Final Results ===")
+try:
+    final_status = run.get_status()
+    print(f"Final run status: {final_status}")
+    
+    # List all runs
+    all_runs = tru_app.list_runs()
+    print(f"Total runs created: {len(all_runs)}")
+    
+except Exception as e:
+    print(f"Error in final check: {e}")
 
 print("\n" + "="*60)
-print("RAG EVALUATION SETUP COMPLETE")
+print("METRICS TROUBLESHOOTING COMPLETE")
 print("="*60)
-print("✅ App instrumented with proper span attributes")
-print("✅ App registered with TruApp and main_method specified") 
-print("✅ Run created with correct dataset_spec format")
-print("✅ Run executed with proper status checking")
-print("✅ Metrics computation initiated after invocation completion")
-print("✅ Enhanced with run metadata and status monitoring")
-print("\n📊 Check Snowsight AI & ML -> Evaluations for results")
-print("🕐 Metrics computed asynchronously in background")
+print("Key fixes applied:")
+print("✅ Proper dataset_spec column mapping")
+print("✅ Unique app and run names")
+print("✅ Simple, clear test data")
+print("✅ Basic metrics first approach")
+print("✅ Alternative LLM judge attempt")
+print("\n📊 Check Snowsight AI & ML -> Evaluations")
+print("🔍 If still no metrics, check:")
+print("   - CORTEX_USER role permissions")
+print("   - LLM model availability") 
+print("   - Span attribute capture in traces")
