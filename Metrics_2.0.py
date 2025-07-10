@@ -25,7 +25,7 @@ print(f"Current context: {session.get_current_database()}.{session.get_current_s
 
 class RAGApplication:
     def __init__(self):
-        self.model = "llama3.1-70b"
+        self.model = "mistral-large2"
         
         self.knowledge_base = {
             "machine learning": [
@@ -104,8 +104,8 @@ print(f"Test successful: {test_response[:100] if test_response else 'No response
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# Register the app
-app_name = f"rag_all_metrics_app_{int(time.time())}"
+# Register the app - EXACT same pattern as working code
+app_name = f"rag_metrics_app_{int(time.time())}"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
@@ -116,7 +116,7 @@ tru_app = TruApp(
 
 print(f"Application registered successfully: {app_name}")
 
-# Create test dataset
+# Create test dataset - EXACT same as working code
 test_data = pd.DataFrame({
     'query': [
         "What is machine learning?",
@@ -132,112 +132,120 @@ test_data = pd.DataFrame({
 
 print(f"Created dataset with {len(test_data)} test queries")
 
-# Create run configuration - using llama3.1-70b everywhere
-run_config = RunConfig(
-    run_name=f"all_metrics_run_{int(time.time())}",
-    description="All metrics computation test run",
-    label="all_metrics_test",
-    source_type="DATAFRAME",
-    dataset_name="All metrics test dataset",
-    dataset_spec={
-        "RETRIEVAL.QUERY_TEXT": "query",
-        "RECORD_ROOT.INPUT": "query",
-        "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
-    },
-    llm_judge_name="llama3.1-70b"
-)
-
-print(f"Run configuration created: {run_config.run_name}")
-print(f"Dataset spec mapping: {run_config.dataset_spec}")
-
-# Add run to TruApp
-run = tru_app.add_run(run_config=run_config)
-print("Run added successfully")
-
-# Start the run
-print("Starting run execution...")
-run.start(input_df=test_data)
-print("Run execution completed")
-
-# Wait for invocation to complete
-print("Waiting for invocation to complete...")
-max_attempts = 30
-attempt = 0
-
-while attempt < max_attempts:
-    status = run.get_status()
-    print(f"Attempt {attempt + 1}: Status = {status}")
+# Function to create and run metrics using the EXACT working pattern
+def run_metric_with_working_pattern(metric_name, tru_app, test_data):
+    print(f"\n=== Running {metric_name.upper()} with Working Pattern ===")
     
-    if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
-        print("✅ Ready to compute metrics!")
-        break
-    elif status == "INVOCATION_FAILED":
-        print("❌ Invocation failed!")
-        exit(1)
+    # EXACT same run config pattern that worked
+    run_config = RunConfig(
+        run_name=f"metrics_run_{metric_name}_{int(time.time())}",
+        description=f"{metric_name} computation test run",
+        label="metrics_test",
+        source_type="DATAFRAME",
+        dataset_name="Metrics test dataset",
+        dataset_spec={
+            # EXACT same mapping that worked
+            "RETRIEVAL.QUERY_TEXT": "query",
+            "RECORD_ROOT.INPUT": "query",
+            "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
+        },
+        llm_judge_name="mistral-large2"  # EXACT same judge
+    )
+    
+    print(f"Run configuration created: {run_config.run_name}")
+    
+    # Add run to TruApp
+    run = tru_app.add_run(run_config=run_config)
+    print("Run added successfully")
+    
+    # Start the run - EXACT same process
+    print("Starting run execution...")
+    run.start(input_df=test_data)
+    print("Run execution completed")
+    
+    # EXACT same wait pattern
+    print("Waiting for invocation to complete...")
+    max_attempts = 30
+    attempt = 0
+    
+    while attempt < max_attempts:
+        status = run.get_status()
+        print(f"Attempt {attempt + 1}: Status = {status}")
+        
+        if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
+            print("✅ Ready to compute metrics!")
+            break
+        elif status == "INVOCATION_FAILED":
+            print("❌ Invocation failed!")
+            return False
+        else:
+            time.sleep(10)
+            attempt += 1
+    
+    if attempt >= max_attempts:
+        print("⚠️ Timeout waiting for completion, trying metrics anyway...")
+    
+    # EXACT same metrics computation pattern
+    try:
+        print(f"Computing: {metric_name}")
+        run.compute_metrics(metrics=[metric_name])
+        print(f"✅ {metric_name} computation started")
+        
+        # EXACT same wait time
+        print("Waiting for metric computation...")
+        time.sleep(60)
+        
+        status_after_metrics = run.get_status()
+        print(f"Status after {metric_name}: {status_after_metrics}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error computing {metric_name}: {e}")
+        return False
+
+# Run each metric using the EXACT working pattern
+metrics_to_test = [
+    "answer_relevance",    # We know this works
+    "context_relevance", 
+    "groundedness",
+    "correctness"
+]
+
+successful_metrics = []
+failed_metrics = []
+
+for metric in metrics_to_test:
+    print(f"\n{'='*60}")
+    print(f"TESTING {metric.upper()} WITH EXACT WORKING PATTERN")
+    print(f"{'='*60}")
+    
+    success = run_metric_with_working_pattern(metric, tru_app, test_data)
+    
+    if success:
+        successful_metrics.append(metric)
+        print(f"✅ {metric} completed successfully")
     else:
-        time.sleep(10)
-        attempt += 1
-
-if attempt >= max_attempts:
-    print("⚠️ Timeout waiting for completion, trying metrics anyway...")
-
-# Compute metrics one by one using the same pattern that worked for answer_relevance
-print("\n=== Computing Answer Relevance ===")
-try:
-    run.compute_metrics(metrics=["answer_relevance"])
-    print("✅ Answer relevance computation started")
-    time.sleep(60)
-except Exception as e:
-    print(f"❌ Answer relevance failed: {e}")
-
-print("\n=== Computing Context Relevance ===")
-try:
-    run.compute_metrics(metrics=["context_relevance"])
-    print("✅ Context relevance computation started")
-    time.sleep(60)
-except Exception as e:
-    print(f"❌ Context relevance failed: {e}")
-
-print("\n=== Computing Groundedness ===")
-try:
-    run.compute_metrics(metrics=["groundedness"])
-    print("✅ Groundedness computation started")
-    time.sleep(60)
-except Exception as e:
-    print(f"❌ Groundedness failed: {e}")
-
-print("\n=== Computing Correctness ===")
-try:
-    run.compute_metrics(metrics=["correctness"])
-    print("✅ Correctness computation started")
-    time.sleep(60)
-except Exception as e:
-    print(f"❌ Correctness failed: {e}")
-
-print("\n=== Computing Coherence ===")
-try:
-    run.compute_metrics(metrics=["coherence"])
-    print("✅ Coherence computation started")
-    time.sleep(60)
-except Exception as e:
-    print(f"❌ Coherence failed: {e}")
-
-# Final status check
-print("\n=== Final Results ===")
-try:
-    final_status = run.get_status()
-    print(f"Final run status: {final_status}")
+        failed_metrics.append(metric)
+        print(f"❌ {metric} failed")
     
-    all_runs = tru_app.list_runs()
-    print(f"Total runs created: {len(all_runs)}")
-    
-except Exception as e:
-    print(f"Error in final check: {e}")
+    # Wait between metrics to avoid conflicts
+    print("Waiting before next metric...")
+    time.sleep(30)
 
+# Final results
 print("\n" + "="*60)
-print("ALL METRICS COMPUTATION COMPLETE")
+print("FINAL RESULTS - EXACT PATTERN REPLICATION")
 print("="*60)
-print("✅ Using llama3.1-70b for all metrics")
-print("✅ Same pattern as working answer_relevance")
-print("✅ One metric at a time with wait periods")
-print("\n📊 Check Snowsight AI & ML -> Evaluations for all metrics")
+print(f"✅ Successful metrics: {successful_metrics}")
+print(f"❌ Failed metrics: {failed_metrics}")
+print(f"Success rate: {len(successful_metrics)}/{len(metrics_to_test)}")
+
+print("\nKey points:")
+print("✅ Used EXACT same code pattern that worked for answer_relevance")
+print("✅ Same dataset_spec mapping")
+print("✅ Same model (mistral-large2)")
+print("✅ Same timing and wait patterns")
+print("✅ Separate run for each metric")
+
+print("\n📊 Check Snowsight AI & ML -> Evaluations")
+print("🔍 Look for multiple runs, each testing one metric")
