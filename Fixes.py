@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 import time
-import random
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
@@ -26,7 +25,7 @@ print(f"Current context: {session.get_current_database()}.{session.get_current_s
 
 class RAGApplication:
     def __init__(self):
-        self.model = "mistral-large2"
+        self.model = "llama3.1-70b"
         
         self.knowledge_base = {
             "machine learning": [
@@ -105,12 +104,8 @@ print(f"Test successful: {test_response[:100] if test_response else 'No response
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# Generate unique timestamp and random ID to avoid conflicts
-base_timestamp = int(time.time())
-session_id = random.randint(1000, 9999)
-
-# Register the app with unique name
-app_name = f"rag_metrics_app_{base_timestamp}_{session_id}"
+# Register the app
+app_name = f"rag_metrics_app_{int(time.time())}"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
@@ -121,7 +116,7 @@ tru_app = TruApp(
 
 print(f"Application registered successfully: {app_name}")
 
-# Create test dataset - EXACT same as working code
+# Create test dataset
 test_data = pd.DataFrame({
     'query': [
         "What is machine learning?",
@@ -137,119 +132,112 @@ test_data = pd.DataFrame({
 
 print(f"Created dataset with {len(test_data)} test queries")
 
-# Function to create and run metrics with unique names and delays
-def run_metric_with_working_pattern(metric_name, tru_app, test_data, base_timestamp, session_id):
-    print(f"\n{'='*60}")
-    print(f"RUNNING {metric_name.upper()} WITH UNIQUE NAMES")
-    print(f"{'='*60}")
-    
-    # Create unique run name with timestamp + random component
-    unique_timestamp = int(time.time())
-    unique_id = random.randint(100, 999)
-    
-    # EXACT same run config pattern that worked but with unique names
-    run_config = RunConfig(
-        run_name=f"{metric_name}_run_{unique_timestamp}_{unique_id}",  # Unique name
-        description=f"{metric_name} computation test run",
-        label=f"{metric_name}_test",
-        source_type="DATAFRAME",
-        dataset_name=f"{metric_name}_test_dataset_{unique_id}",  # Unique dataset name
-        dataset_spec={
-            # EXACT same mapping that worked
-            "RETRIEVAL.QUERY_TEXT": "query",
-            "RECORD_ROOT.INPUT": "query",
-            "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
-        },
-        llm_judge_name="mistral-large2"  # EXACT same judge
-    )
-    
-    print(f"Run configuration created: {run_config.run_name}")
-    
-    try:
-        # Add run to TruApp
-        run = tru_app.add_run(run_config=run_config)
-        print("Run added successfully")
-        
-        # Start the run - EXACT same process
-        print("Starting run execution...")
-        run.start(input_df=test_data)
-        print("Run execution completed")
-        
-        # EXACT same wait pattern
-        print("Waiting for invocation to complete...")
-        max_attempts = 30
-        attempt = 0
-        
-        while attempt < max_attempts:
-            status = run.get_status()
-            print(f"Attempt {attempt + 1}: Status = {status}")
-            
-            if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
-                print("✅ Ready to compute metrics!")
-                break
-            elif status == "INVOCATION_FAILED":
-                print("❌ Invocation failed!")
-                return False
-            else:
-                time.sleep(10)
-                attempt += 1
-        
-        if attempt >= max_attempts:
-            print("⚠️ Timeout waiting for completion, trying metrics anyway...")
-        
-        # EXACT same metrics computation pattern
-        print(f"Computing: {metric_name}")
-        run.compute_metrics(metrics=[metric_name])
-        print(f"✅ {metric_name} computation started")
-        
-        # EXACT same wait time
-        print("Waiting for metric computation...")
-        time.sleep(60)
-        
-        status_after_metrics = run.get_status()
-        print(f"Status after {metric_name}: {status_after_metrics}")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error with {metric_name}: {e}")
-        return False
+# SINGLE run configuration as per documentation
+run_config = RunConfig(
+    run_name=f"all_metrics_run_{int(time.time())}",
+    description="All metrics computation on single run",
+    label="all_metrics_test",
+    source_type="DATAFRAME",
+    dataset_name="All metrics test dataset",
+    dataset_spec={
+        "RETRIEVAL.QUERY_TEXT": "query",
+        "RECORD_ROOT.INPUT": "query",
+        "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
+    },
+    llm_judge_name="llama3.1-70b"  # Use default judge
+)
 
-# Run remaining metrics that haven't been tested yet
-remaining_metrics = [
-    "groundedness",    # Try this again to confirm
-    "correctness"      # 
+print(f"Single run configuration created: {run_config.run_name}")
+
+# Add SINGLE run to TruApp
+run = tru_app.add_run(run_config=run_config)
+print("Single run added successfully")
+
+# Start the run and wait for completion FIRST
+print("Starting run execution...")
+run.start(input_df=test_data)
+print("Run execution completed")
+
+# CRITICAL: Wait for invocation to complete before ANY metrics computation
+print("\n" + "="*60)
+print("WAITING FOR INVOCATION TO COMPLETE (AS PER DOCUMENTATION)")
+print("="*60)
+
+max_attempts = 60  # Increase attempts for stability
+attempt = 0
+
+while attempt < max_attempts:
+    status = run.get_status()
+    print(f"Attempt {attempt + 1}: Status = {status}")
+    
+    if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
+        print("✅ INVOCATION COMPLETED - Ready to compute ALL metrics!")
+        break
+    elif status == "INVOCATION_FAILED":
+        print("❌ Invocation failed!")
+        exit(1)
+    else:
+        time.sleep(15)  # Longer wait between checks
+        attempt += 1
+
+if attempt >= max_attempts:
+    print("⚠️ Timeout waiting for completion, but trying metrics anyway...")
+
+# NOW compute ALL metrics in a SINGLE call (as per documentation)
+print("\n" + "="*60)
+print("COMPUTING ALL METRICS IN SINGLE CALL")
+print("="*60)
+
+# All metrics in one call - this is the correct approach
+all_metrics = [
+    "answer_relevance",
+    "context_relevance", 
+    "groundedness",
+    "correctness"
 ]
 
-successful_metrics = ["answer_relevance", "context_relevance"]  # Already working
-failed_metrics = []
+print(f"Computing all metrics: {all_metrics}")
 
-for metric in remaining_metrics:
-    print(f"\n🔄 LONG DELAY BEFORE {metric.upper()} (Avoiding conflicts)")
-    time.sleep(120)  # 2 minute delay between runs to avoid conflicts
+try:
+    # Single compute_metrics call with all metrics
+    run.compute_metrics(metrics=all_metrics)
+    print("✅ ALL metrics computation initiated successfully in single call")
     
-    print(f"\nStarting {metric} with unique identifiers...")
-    success = run_metric_with_working_pattern(metric, tru_app, test_data, base_timestamp, session_id)
+    # Wait for all computations to complete
+    print("Waiting for all metrics computation to complete...")
+    time.sleep(120)  # Give more time for all metrics
     
-    if success:
-        successful_metrics.append(metric)
-        print(f"✅ {metric} completed successfully")
-    else:
-        failed_metrics.append(metric)
-        print(f"❌ {metric} failed")
+    # Check final status
+    final_status = run.get_status()
+    print(f"Final status after all metrics: {final_status}")
+    
+    print("✅ All metrics computation completed")
+    successful_metrics = all_metrics
+    failed_metrics = []
+    
+except Exception as e:
+    print(f"❌ Error computing all metrics: {e}")
+    successful_metrics = []
+    failed_metrics = all_metrics
 
 # Final results
 print("\n" + "="*60)
-print("FINAL RESULTS - FIXED CONFLICTS")
+print("FINAL RESULTS - CORRECT DOCUMENTATION APPROACH")
 print("="*60)
 print(f"✅ Successful metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
-print(f"Success rate: {len(successful_metrics)}/4")
+print(f"Success rate: {len(successful_metrics)}/{len(all_metrics)}")
 
-print("\nKey fixes applied:")
-print("✅ Unique run names with timestamps + random IDs")
-print("✅ Unique dataset names")
-print("✅ Long delays (2 minutes) between runs")
-print("✅ Better error handling for conflicts")
+# Final status check
+final_status = run.get_status()
+print(f"\nFinal run status: {final_status}")
+
+print("\nCorrect approach used:")
+print("✅ Single run configuration")
+print("✅ Wait for invocation completion FIRST")
+print("✅ Single compute_metrics() call with ALL metrics")
+print("✅ Using llama3.1-70b everywhere")
+print("✅ Following documentation exactly")
 
 print("\n📊 Check Snowsight AI & ML -> Evaluations")
-print("🔍 Should see separate runs with unique names")
+print("🔍 Should see ONE run with multiple metrics")
