@@ -25,7 +25,7 @@ print(f"Current context: {session.get_current_database()}.{session.get_current_s
 
 class RAGApplication:
     def __init__(self):
-        self.model = "llama3.1-70b"
+        self.model = "mistral-large2"
         
         self.knowledge_base = {
             "machine learning": [
@@ -144,7 +144,7 @@ run_config = RunConfig(
         "RECORD_ROOT.INPUT": "query",
         "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
     },
-    llm_judge_name="llama3.1-70b"  # Use default judge
+    llm_judge_name="mistral-large2"
 )
 
 print(f"Single run configuration created: {run_config.run_name}")
@@ -183,42 +183,46 @@ while attempt < max_attempts:
 if attempt >= max_attempts:
     print("⚠️ Timeout waiting for completion, but trying metrics anyway...")
 
-# NOW compute ALL metrics in a SINGLE call (as per documentation)
+# NOW compute metrics one by one on the SAME run (as per documentation)
 print("\n" + "="*60)
-print("COMPUTING ALL METRICS IN SINGLE CALL")
+print("COMPUTING MULTIPLE METRICS ON SAME RUN")
 print("="*60)
 
-# All metrics in one call - this is the correct approach
-all_metrics = [
+metrics_to_compute = [
     "answer_relevance",
     "context_relevance", 
     "groundedness",
     "correctness"
 ]
 
-print(f"Computing all metrics: {all_metrics}")
+successful_metrics = []
+failed_metrics = []
 
-try:
-    # Single compute_metrics call with all metrics
-    run.compute_metrics(metrics=all_metrics)
-    print("✅ ALL metrics computation initiated successfully in single call")
+for metric in metrics_to_compute:
+    print(f"\n--- Computing {metric.upper()} on same run ---")
     
-    # Wait for all computations to complete
-    print("Waiting for all metrics computation to complete...")
-    time.sleep(120)  # Give more time for all metrics
+    try:
+        # Call compute_metrics on the SAME run object
+        run.compute_metrics(metrics=[metric])
+        print(f"✅ {metric} computation initiated successfully")
+        
+        # Give time for computation to process
+        print(f"Waiting for {metric} computation to complete...")
+        time.sleep(90)  # Longer wait for each metric
+        
+        # Check status after metric computation
+        current_status = run.get_status()
+        print(f"Status after {metric}: {current_status}")
+        
+        successful_metrics.append(metric)
+        
+    except Exception as e:
+        print(f"❌ Error computing {metric}: {e}")
+        failed_metrics.append(metric)
     
-    # Check final status
-    final_status = run.get_status()
-    print(f"Final status after all metrics: {final_status}")
-    
-    print("✅ All metrics computation completed")
-    successful_metrics = all_metrics
-    failed_metrics = []
-    
-except Exception as e:
-    print(f"❌ Error computing all metrics: {e}")
-    successful_metrics = []
-    failed_metrics = all_metrics
+    # Brief pause between metrics
+    print(f"Brief pause before next metric...")
+    time.sleep(30)
 
 # Final results
 print("\n" + "="*60)
@@ -226,7 +230,7 @@ print("FINAL RESULTS - CORRECT DOCUMENTATION APPROACH")
 print("="*60)
 print(f"✅ Successful metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
-print(f"Success rate: {len(successful_metrics)}/{len(all_metrics)}")
+print(f"Success rate: {len(successful_metrics)}/{len(metrics_to_compute)}")
 
 # Final status check
 final_status = run.get_status()
@@ -235,8 +239,7 @@ print(f"\nFinal run status: {final_status}")
 print("\nCorrect approach used:")
 print("✅ Single run configuration")
 print("✅ Wait for invocation completion FIRST")
-print("✅ Single compute_metrics() call with ALL metrics")
-print("✅ Using llama3.1-70b everywhere")
+print("✅ Multiple compute_metrics() calls on SAME run")
 print("✅ Following documentation exactly")
 
 print("\n📊 Check Snowsight AI & ML -> Evaluations")
