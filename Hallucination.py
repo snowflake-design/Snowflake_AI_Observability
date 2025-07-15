@@ -119,8 +119,23 @@ Answer:"""
             return f"Error generating response: {str(e)}"
 
     @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
-    def answer_query(self, query: str, username: str = "unknown") -> str:  # ADD USERNAME PARAMETER
+    def answer_query(self, input_data, username: str = "unknown") -> str:  # MODIFIED TO HANDLE BOTH
         """Main entry point for the RAG application."""
+        
+        # Handle different input types
+        if isinstance(input_data, dict):
+            # Dataset row input
+            query = input_data.get('query', '')
+            username = input_data.get('username', 'unknown')
+        elif hasattr(input_data, 'get'):
+            # Pandas Series input
+            query = input_data.get('query', str(input_data))
+            username = input_data.get('username', 'unknown')
+        else:
+            # String input (direct query)
+            query = str(input_data)
+            # username parameter will be used
+        
         # ADD THIS - Log username and toxicity in trace context
         print(f"🔍 Processing query from user: {username}")
         
@@ -168,27 +183,14 @@ print(f"Created dataset with {len(test_data)} test queries")
 print("Dataset preview:")
 print(test_data[['query', 'username']].to_string())
 
-# MODIFIED - Update answer_query to handle row input for dataset processing
-def process_row_input(row):
-    """Process dataset row with username."""
-    if isinstance(row, dict):
-        query = row.get('query', '')
-        username = row.get('username', 'unknown')
-    else:
-        # Handle pandas Series
-        query = row['query'] if 'query' in row else str(row)
-        username = row['username'] if 'username' in row else 'unknown'
-    
-    return test_app.answer_query(query, username)
-
-# Register the app - SINGLE REGISTRATION with enhanced functionality
+# Register the app - SINGLE REGISTRATION using original answer_query method
 app_name = f"rag_metrics_app_{int(time.time())}"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
     app_version="v1.0",
     connector=connector,
-    main_method=process_row_input  # Use enhanced processing function
+    main_method=test_app.answer_query  # Back to original method - now enhanced
 )
 
 print(f"Application registered successfully: {app_name}")
