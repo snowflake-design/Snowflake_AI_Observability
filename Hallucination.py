@@ -147,18 +147,6 @@ print(f"Test successful: {test_response[:100] if test_response else 'No response
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# Register the app
-app_name = f"rag_metrics_app_{int(time.time())}"
-tru_app = TruApp(
-    test_app,
-    app_name=app_name, 
-    app_version="v1.0",
-    connector=connector,
-    main_method=test_app.answer_query
-)
-
-print(f"Application registered successfully: {app_name}")
-
 # ADD THIS - Enhanced test dataset with usernames
 usernames = ["abc", "XYZ", "KKK"]  # Your requested usernames
 
@@ -180,6 +168,31 @@ print(f"Created dataset with {len(test_data)} test queries")
 print("Dataset preview:")
 print(test_data[['query', 'username']].to_string())
 
+# MODIFIED - Update answer_query to handle row input for dataset processing
+def process_row_input(row):
+    """Process dataset row with username."""
+    if isinstance(row, dict):
+        query = row.get('query', '')
+        username = row.get('username', 'unknown')
+    else:
+        # Handle pandas Series
+        query = row['query'] if 'query' in row else str(row)
+        username = row['username'] if 'username' in row else 'unknown'
+    
+    return test_app.answer_query(query, username)
+
+# Register the app - SINGLE REGISTRATION with enhanced functionality
+app_name = f"rag_metrics_app_{int(time.time())}"
+tru_app = TruApp(
+    test_app,
+    app_name=app_name, 
+    app_version="v1.0",
+    connector=connector,
+    main_method=process_row_input  # Use enhanced processing function
+)
+
+print(f"Application registered successfully: {app_name}")
+
 # SINGLE run configuration as per documentation
 run_config = RunConfig(
     run_name=f"all_metrics_run_{int(time.time())}",
@@ -191,37 +204,15 @@ run_config = RunConfig(
         "RETRIEVAL.QUERY_TEXT": "query",
         "RECORD_ROOT.INPUT": "query",
         "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
-        # Note: username will be passed as parameter to answer_query
+        # Note: username will be extracted from row data
     },
     llm_judge_name="mistral-large2"
 )
 
 print(f"Single run configuration created: {run_config.run_name}")
 
-# FIXED APPROACH - Create a separate app class for username handling
-class RAGApplicationWithUsername:
-    def __init__(self, rag_app):
-        self.rag_app = rag_app
-    
-    @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
-    def answer_query_with_user(self, query: str, username: str = "unknown") -> str:
-        """Wrapper method that handles username parameter."""
-        return self.rag_app.answer_query(query, username)
-
-# Create wrapper app instance
-wrapper_app = RAGApplicationWithUsername(test_app)
-
-# Use the original TruApp approach with wrapper app
-tru_app_with_username = TruApp(
-    wrapper_app,
-    app_name=f"{app_name}_with_users",
-    app_version="v1.1", 
-    connector=connector,
-    main_method=wrapper_app.answer_query_with_user  # Use bound method
-)
-
 # Add SINGLE run to TruApp
-run = tru_app_with_username.add_run(run_config=run_config)
+run = tru_app.add_run(run_config=run_config)
 print("Single run added successfully")
 
 # Start the run and wait for completion FIRST
@@ -325,9 +316,10 @@ print("✅ Username logging (abc, XYZ, KKK)")
 print("✅ Toxicity detection using HuggingFace")
 print("✅ Custom toxicity classifier integration")
 print("✅ User tracking in traces")
+print("✅ SINGLE TruApp registration (no duplicates)")
 print("✅ All original functionality preserved")
 
 print("\n📊 Check Snowsight AI & ML -> Evaluations")
-print("🔍 Should see runs with user context and toxicity info")
+print("🔍 Should see ONE application with user context and toxicity info")
 print("👥 User information logged in application traces")
 print("🛡️ Toxicity detection results in console output")
