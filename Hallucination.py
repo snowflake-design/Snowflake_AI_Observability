@@ -198,18 +198,26 @@ run_config = RunConfig(
 
 print(f"Single run configuration created: {run_config.run_name}")
 
-# ADD THIS - Create wrapper function to handle username parameter
-def run_with_username(row):
-    """Wrapper to pass username to answer_query method."""
-    return test_app.answer_query(row['query'], row['username'])
+# FIXED APPROACH - Create a separate app class for username handling
+class RAGApplicationWithUsername:
+    def __init__(self, rag_app):
+        self.rag_app = rag_app
+    
+    @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
+    def answer_query_with_user(self, query: str, username: str = "unknown") -> str:
+        """Wrapper method that handles username parameter."""
+        return self.rag_app.answer_query(query, username)
 
-# MODIFY THIS - Update TruApp to use wrapper function
+# Create wrapper app instance
+wrapper_app = RAGApplicationWithUsername(test_app)
+
+# Use the original TruApp approach with wrapper app
 tru_app_with_username = TruApp(
-    test_app,
+    wrapper_app,
     app_name=f"{app_name}_with_users",
     app_version="v1.1", 
     connector=connector,
-    main_method=run_with_username  # Use wrapper function
+    main_method=wrapper_app.answer_query_with_user  # Use bound method
 )
 
 # Add SINGLE run to TruApp
