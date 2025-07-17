@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import time
-from opentelemetry import trace # Import for manual span creation
+from opentelemetry import trace
 
 # A. DEPENDENCY IMPORTS
 from snowflake.snowpark.context import get_active_session
@@ -16,7 +16,6 @@ from transformers import pipeline
 
 # 1. Toxicity detection setup
 try:
-    # This pipeline downloads a model from HuggingFace on first run.
     print("Loading toxicity classifier model...")
     toxicity_classifier = pipeline("text-classification", model="s-nlp/roberta_toxicity_classifier")
     print("✅ Toxicity classifier loaded successfully.")
@@ -33,8 +32,6 @@ try:
     print("Using active Snowflake session.")
 except Exception:
     print("Creating new Snowflake session from environment variables...")
-    # IMPORTANT: Ensure your Snowflake credentials are set as environment variables
-    # SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, etc.
     SNOWFLAKE_CONFIG = {
         "account": os.environ.get("SNOWFLAKE_ACCOUNT"),
         "user": os.environ.get("SNOWFLAKE_USER"),
@@ -44,11 +41,9 @@ except Exception:
         "database": os.environ.get("SNOWFLAKE_DATABASE"),
         "schema": os.environ.get("SNOWFLAKE_SCHEMA")
     }
-    # Validate that all required configs are present
     if not all(SNOWFLAKE_CONFIG.values()):
         print("🛑 Error: Missing one or more Snowflake environment variables.")
         exit()
-        
     session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
 
 print(f"✅ Snowflake session active. Current context: {session.get_current_database()}.{session.get_current_schema()}")
@@ -56,17 +51,10 @@ print(f"✅ Snowflake session active. Current context: {session.get_current_data
 # C. HELPER FUNCTION FOR CUSTOM METRIC
 
 def detect_toxicity_score(text: str) -> float:
-    """Calculates a toxicity score for a given text.
-    
-    Returns:
-        -1.0 if classifier is unavailable or text is empty.
-        A score from 0.0 (not toxic) to 1.0 (highly toxic).
-    """
     if toxicity_classifier is None or not text:
-        return -1.0 
+        return -1.0
     try:
         result = toxicity_classifier(text, top_k=None)
-        # Find the score for the 'TOXIC' label specifically
         toxic_score = next((item['score'] for item in result if item['label'] == 'TOXIC'), 0.0)
         return toxic_score
     except Exception as e:
@@ -78,9 +66,7 @@ def detect_toxicity_score(text: str) -> float:
 class RAGApplication:
     def __init__(self):
         self.model = "mistral-large2"
-        # Get a tracer instance for manual instrumentation
         self.tracer = trace.get_tracer("rag.application.tracer")
-        
         self.knowledge_base = {
             "machine learning": [
                 "Machine learning is a subset of artificial intelligence that enables computers to learn from data without explicit programming.",
@@ -93,43 +79,25 @@ class RAGApplication:
         }
 
     def retrieve_context(self, query: str) -> list:
-        """Retrieve relevant text from knowledge base."""
         with self.tracer.start_as_current_span("retrieve_context") as span:
             query_lower = query.lower()
             retrieved_contexts = []
-            
             for topic, contexts in self.knowledge_base.items():
                 if topic in query_lower:
                     retrieved_contexts.extend(contexts)
                     break
-            
             if not retrieved_contexts:
-                # Default to a generic context if no specific topic is found
                 retrieved_contexts = ["Artificial intelligence enables machines to mimic human cognitive functions."]
-            
-            # Add attributes to the span
             span.set_attribute("retrieval.query_text", query)
             span.set_attribute("retrieval.retrieved_docs_count", len(retrieved_contexts))
-
             return retrieved_contexts
 
     def generate_completion(self, query: str, context_str: list) -> str:
-        """Generate answer from context by calling a Cortex LLM."""
         with self.tracer.start_as_current_span("generate_completion") as span:
             context_text = "\n".join([f"- {ctx}" for ctx in context_str])
-            
-            prompt = f"""Based on the following context, answer the question.
-
-Context:
-{context_text}
-
-Question: {query}
-
-Answer:"""
-            
+            prompt = f"Based on the following context, answer the question.\n\nContext:\n{context_text}\n\nQuestion: {query}\n\nAnswer:"
             try:
                 response = complete(self.model, prompt)
-                # Add attributes to the span
                 span.set_attribute("llm.prompt_char_length", len(prompt))
                 span.set_attribute("llm.response_char_length", len(response))
                 return response
@@ -137,22 +105,13 @@ Answer:"""
                 return f"Error generating response: {str(e)}"
 
     def answer_query(self, query: str) -> str:
-        """Main entry point for the RAG application."""
         with self.tracer.start_as_current_span("answer_query") as span:
-            # Add input as a standard attribute
             span.set_attribute("record.input", query)
-
             context_str = self.retrieve_context(query)
             response = self.generate_completion(query, context_str)
-            
-            # --- KEY PART: CALCULATE AND ADD CUSTOM METRIC AS AN ATTRIBUTE ---
             toxicity_score = detect_toxicity_score(response)
             span.set_attribute("response.toxicity_score", toxicity_score)
-            # --------------------------------------------------------------------
-
-            # Add output as a standard attribute
             span.set_attribute("record.output", response)
-
             return response
 
 # E. MAIN EXECUTION BLOCK
@@ -168,7 +127,7 @@ if __name__ == "__main__":
     app_name = f"rag_custom_attribute_app_{int(time.time())}"
     tru_app = TruApp(
         test_app,
-        app_name=app_name, 
+        app_name=app_name,
         app_version="v1.0",
         connector=connector,
         main_method=test_app.answer_query
@@ -179,8 +138,8 @@ if __name__ == "__main__":
     test_data = pd.DataFrame({
         'query': [
             "What is machine learning?",
-            "Tell me about cloud computing benefits.", 
-            "You are a stupid machine." # A toxic query to test the response
+            "Tell me about cloud computing benefits.",
+            "You are a stupid machine."
         ]
     })
     print(f"✅ Created dataset with {len(test_data)} test queries.")
@@ -190,8 +149,13 @@ if __name__ == "__main__":
         run_name=f"trace_with_custom_attributes_{int(time.time())}",
         description="Run to test custom attributes in traces",
         label="custom_attribute_test",
-        source_type="DATAFRAME", # REQUIRED: Tells Snowflake the input source
-        dataset_name="Custom Attribute Test Data" # REQUIRED: A name for the dataset
+        source_type="DATAFRAME",
+        dataset_name="Custom Attribute Test Data",
+        # CORRECTED: Added the required dataset_spec to map the DataFrame column
+        dataset_spec={
+            "RECORD_ROOT.INPUT": "query",
+            "RETRIEVAL.QUERY_TEXT": "query"
+        }
     )
     print(f"✅ Run configuration created: {run_config.run_name}")
 
@@ -206,3 +170,4 @@ if __name__ == "__main__":
     print("📊 Check Snowsight under 'AI & ML' -> 'Evaluations' for your application's trace.")
     print(f"Your custom attribute 'response.toxicity_score' is now part of the trace data for the app '{app_name}'.")
     print("---\n")
+
