@@ -1,288 +1,171 @@
 import os
+import pandas as pd
 import time
-import logging
+
+# A. DEPENDENCY IMPORTS
+from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
-
-# Import TruLens components in the correct order
-from trulens.core import TruSession
-from trulens.apps.app import TruApp
+from trulens_eval import TruCustomApp # NEW: Using TruCustomApp for automatic instrumentation
+from trulens_eval.utils.threading import get_current_span # NEW: Utility to get the active span
 from trulens.connectors.snowflake import SnowflakeConnector
+from trulens.core.run import Run, RunConfig
+from transformers import pipeline
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-logging.getLogger('snowflake.snowpark').setLevel(logging.WARNING)
-logging.getLogger('urllib3').setLevel(logging.WARNING)
+# B. SETUP AND CONFIGURATION
 
-# Snowflake connection parameters
-SNOWFLAKE_CONFIG = {
-    'account': 'your_account',
-    'user': 'your_username', 
-    'password': 'your_password',
-    'warehouse': 'your_warehouse',
-    'database': 'your_database',
-    'schema': 'your_schema',
-    'role': 'your_role'
-}
+# 1. Toxicity detection setup
+try:
+    print("Loading toxicity classifier model...")
+    toxicity_classifier = pipeline("text-classification", model="s-nlp/roberta_toxicity_classifier")
+    print("✅ Toxicity classifier loaded successfully.")
+except Exception as e:
+    print(f"⚠️ Could not load toxicity classifier: {e}")
+    toxicity_classifier = None
 
-# CRITICAL: Set TruLens environment variables BEFORE any imports
+# 2. Enable TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
 
-class SimpleAIApp:
-    """
-    AI Application without @instrument decorators - we'll handle tracing manually
-    """
-    
-    def __init__(self, session: Session):
-        self.session = session
-        self.app_name = "manual_trace_app"
-    
-    def generate_answer(self, question: str) -> str:
-        """Simple generation without decorator"""
-        logging.info(f"  [AIApp] Generating answer for: '{question[:50]}...'")
-        
-        prompt = f"""
-        You are a helpful assistant. Answer the following question concisely:
-        
-        Question: {question}
-        
-        Answer:
-        """
-        
+# 3. Get Snowflake session
+try:
+    session = get_active_session()
+    print("Using active Snowflake session.")
+except Exception:
+    print("Creating new Snowflake session from environment variables...")
+    SNOWFLAKE_CONFIG = {
+        "account": os.environ.get("SNOWFLAKE_ACCOUNT"),
+        "user": os.environ.get("SNOWFLAKE_USER"),
+        "password": os.environ.get("SNOWFLAKE_PASSWORD"),
+        "role": os.environ.get("SNOWFLAKE_ROLE"),
+        "warehouse": os.environ.get("SNOWFLAKE_WAREHOUSE"),
+        "database": os.environ.get("SNOWFLAKE_DATABASE"),
+        "schema": os.environ.get("SNOWFLAKE_SCHEMA")
+    }
+    if not all(SNOWFLAKE_CONFIG.values()):
+        print("🛑 Error: Missing one or more Snowflake environment variables.")
+        exit()
+    session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
+
+print(f"✅ Snowflake session active. Current context: {session.get_current_database()}.{session.get_current_schema()}")
+
+# C. HELPER FUNCTION FOR CUSTOM METRIC
+
+def detect_toxicity_score(text: str) -> float:
+    if toxicity_classifier is None or not text:
+        return -1.0
+    try:
+        result = toxicity_classifier(text, top_k=None)
+        toxic_score = next((item['score'] for item in result if item['label'] == 'TOXIC'), 0.0)
+        return toxic_score
+    except Exception as e:
+        print(f"Error during toxicity detection: {e}")
+        return -1.0
+
+# D. RAG APPLICATION (CLEANED - NO MANUAL TRACING)
+
+class RAGApplication:
+    def __init__(self):
+        self.model = "mistral-large2"
+        # REMOVED: All manual tracer and OpenTelemetry code
+        self.knowledge_base = {
+            "machine learning": [
+                "Machine learning is a subset of artificial intelligence that enables computers to learn from data without explicit programming.",
+                "Common types include supervised learning, unsupervised learning, and reinforcement learning."
+            ],
+            "cloud computing": [
+                "Cloud computing delivers computing services over the internet including storage, processing power, and applications.",
+                "Major benefits include scalability, cost-effectiveness, and accessibility."
+            ]
+        }
+
+    def retrieve_context(self, query: str) -> list:
+        # This method is now plain Python. TruCustomApp will create the span.
+        query_lower = query.lower()
+        retrieved_contexts = []
+        for topic, contexts in self.knowledge_base.items():
+            if topic in query_lower:
+                retrieved_contexts.extend(contexts)
+                break
+        if not retrieved_contexts:
+            retrieved_contexts = ["Artificial intelligence enables machines to mimic human cognitive functions."]
+        return retrieved_contexts
+
+    def generate_completion(self, query: str, context_str: list) -> str:
+        # This method is now plain Python. TruCustomApp will create the span.
+        context_text = "\n".join([f"- {ctx}" for ctx in context_str])
+        prompt = f"Based on the following context, answer the question.\n\nContext:\n{context_text}\n\nQuestion: {query}\n\nAnswer:"
         try:
-            response = complete("mixtral-8x7b", prompt)
-            logging.info(f"  [AIApp] Answer generated: {len(response)} chars")
+            response = complete(self.model, prompt)
             return response
         except Exception as e:
-            error_msg = f"Error generating response: {str(e)}"
-            logging.error(f"  [AIApp] {error_msg}")
-            return error_msg
-    
-    def retrieve_info(self, topic: str) -> list:
-        """Simple retrieval without decorator"""
-        logging.info(f"  [AIApp] Retrieving info for: '{topic}'")
-        
-        mock_info = [
-            f"Information about {topic}: This is context item 1",
-            f"More details on {topic}: This is context item 2", 
-            f"Additional facts about {topic}: This is context item 3"
-        ]
-        
-        logging.info(f"  [AIApp] Retrieved {len(mock_info)} items")
-        return mock_info
-    
-    def ask_with_context(self, question: str, context_list: list) -> str:
-        """RAG-style generation without decorator"""
-        logging.info(f"  [AIApp] Generating with context for: '{question[:50]}...'")
-        
-        context_str = "\n".join(context_list)
-        prompt = f"""
-        Based on the following context, answer the question:
-        
-        Context:
-        {context_str}
-        
-        Question: {question}
-        
-        Answer:
-        """
-        
-        try:
-            response = complete("mixtral-8x7b", prompt)
-            logging.info(f"  [AIApp] Context-based answer generated: {len(response)} chars")
-            return response
-        except Exception as e:
-            error_msg = f"Error generating response with context: {str(e)}"
-            logging.error(f"  [AIApp] {error_msg}")
-            return error_msg
+            return f"Error generating response: {str(e)}"
 
-class InstrumentedAIApp:
-    """
-    Wrapper class that adds manual instrumentation to ensure traces are captured
-    """
-    
-    def __init__(self, base_app: SimpleAIApp, tru_app: TruApp):
-        self.base_app = base_app
-        self.tru_app = tru_app
-    
-    def generate_answer(self, question: str) -> str:
-        """Manually instrumented generation"""
-        logging.info("🎯 Starting instrumented generation...")
-        
-        # Manual span creation and context management
-        with self.tru_app.tracer.start_as_current_span("generate_answer") as span:
-            span.set_attribute("operation.type", "generation")
-            span.set_attribute("model.name", "mixtral-8x7b")
-            span.set_attribute("input.question", question)
-            
-            result = self.base_app.generate_answer(question)
-            
-            span.set_attribute("output.response", result[:100])
-            span.set_attribute("output.length", len(result))
-            
-            logging.info("✅ Manual instrumentation completed")
-            return result
-    
-    def retrieve_info(self, topic: str) -> list:
-        """Manually instrumented retrieval"""
-        logging.info("🎯 Starting instrumented retrieval...")
-        
-        with self.tru_app.tracer.start_as_current_span("retrieve_info") as span:
-            span.set_attribute("operation.type", "retrieval")
-            span.set_attribute("input.topic", topic)
-            
-            result = self.base_app.retrieve_info(topic)
-            
-            span.set_attribute("output.count", len(result))
-            span.set_attribute("output.items", str(result))
-            
-            logging.info("✅ Manual retrieval instrumentation completed")
-            return result
-    
-    def ask_with_context(self, question: str, context_list: list) -> str:
-        """Manually instrumented RAG"""
-        logging.info("🎯 Starting instrumented RAG generation...")
-        
-        with self.tru_app.tracer.start_as_current_span("ask_with_context") as span:
-            span.set_attribute("operation.type", "rag_generation")
-            span.set_attribute("model.name", "mixtral-8x7b")
-            span.set_attribute("input.question", question)
-            span.set_attribute("input.context_count", len(context_list))
-            
-            result = self.base_app.ask_with_context(question, context_list)
-            
-            span.set_attribute("output.response", result[:100])
-            span.set_attribute("output.length", len(result))
-            
-            logging.info("✅ Manual RAG instrumentation completed")
-            return result
+    def answer_query(self, query: str) -> str:
+        # This is the main method that TruLens will trace.
+        context_str = self.retrieve_context(query)
+        response = self.generate_completion(query, context_str)
 
-def main():
-    logging.info("=== Manual Instrumentation AI Observability Test ===")
-    
-    # Step 1: Create Snowflake session
-    logging.info("1. Creating Snowflake session...")
-    session = None
-    try:
-        session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
-        logging.info(f"✅ Session created. Role: {session.get_current_role()}")
-        logging.info(f"   Database: {session.get_current_database()}")
-        logging.info(f"   Schema: {session.get_current_schema()}")
-        
-    except Exception as e:
-        logging.error(f"❌ Failed to create session: {e}")
-        return
-    
-    # Step 2: Initialize TruSession explicitly
-    logging.info("2. Initializing TruSession...")
-    try:
-        tru_session = TruSession()
-        logging.info("✅ TruSession initialized")
-    except Exception as e:
-        logging.error(f"❌ Failed to initialize TruSession: {e}")
-        return
-    
-    # Step 3: Create connector
-    logging.info("3. Creating SnowflakeConnector...")
-    try:
-        connector = SnowflakeConnector(snowpark_session=session)
-        logging.info("✅ SnowflakeConnector created")
-    except Exception as e:
-        logging.error(f"❌ Failed to create connector: {e}")
-        return
-    
-    # Step 4: Create base AI app
-    logging.info("4. Creating AI application...")
-    base_app = SimpleAIApp(session)
-    logging.info("✅ Base AI application created")
-    
-    # Step 5: Create TruApp
-    logging.info("5. Creating TruApp...")
-    APP_NAME = "manual_instrumentation_test"
-    APP_VERSION = "v1.0"
-    
-    try:
-        tru_app = TruApp(
-            base_app,
-            app_name=APP_NAME,
-            app_version=APP_VERSION,
-            connector=connector
-        )
-        logging.info(f"✅ TruApp created: {APP_NAME} v{APP_VERSION}")
-    except Exception as e:
-        logging.error(f"❌ Failed to create TruApp: {e}")
-        return
-    
-    # Step 6: Create manually instrumented wrapper
-    logging.info("6. Creating manually instrumented wrapper...")
-    instrumented_app = InstrumentedAIApp(base_app, tru_app)
-    logging.info("✅ Instrumented wrapper created")
-    
-    # Step 7: Run tests with manual instrumentation
-    logging.info("7. Running manually instrumented tests...")
-    
-    try:
-        # Test 1: Simple generation
-        logging.info("\n--- Test 1: Simple Generation ---")
-        with tru_app as recording:
-            answer1 = instrumented_app.generate_answer("What is artificial intelligence?")
-            logging.info(f"Generated: {answer1[:50]}...")
-        
-        # Test 2: Retrieval
-        logging.info("\n--- Test 2: Information Retrieval ---")
-        with tru_app as recording:
-            contexts = instrumented_app.retrieve_info("machine learning")
-            logging.info(f"Retrieved {len(contexts)} contexts")
-        
-        # Test 3: RAG generation
-        logging.info("\n--- Test 3: RAG Generation ---")
-        with tru_app as recording:
-            rag_answer = instrumented_app.ask_with_context(
-                "How does machine learning work?",
-                contexts
-            )
-            logging.info(f"RAG answer: {rag_answer[:50]}...")
-        
-        logging.info("\n✅ All manual instrumentation tests completed")
-        
-    except Exception as e:
-        logging.error(f"❌ Manual instrumentation tests failed: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Step 8: Wait for data processing
-    logging.info("\n8. Waiting for trace data to be processed...")
-    time.sleep(10)
-    
-    logging.info("\n=== VERIFICATION STEPS ===")
-    logging.info("Wait 5-15 minutes, then run:")
-    logging.info(f"""
-    SELECT 
-        APPLICATION_NAME,
-        APPLICATION_VERSION,
-        OBSERVED_TIMESTAMP,
-        TRACE:trace_id::string as TRACE_ID,
-        TRACE:span_id::string as SPAN_ID,
-        RECORD:name::string as SPAN_NAME,
-        RECORD:attributes::string as ATTRIBUTES
-    FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-    WHERE APPLICATION_NAME = '{APP_NAME}'
-    ORDER BY OBSERVED_TIMESTAMP DESC;
-    """)
-    
-    logging.info("\nIf traces are still null, the issue is likely:")
-    logging.info("1. TruLens version compatibility")
-    logging.info("2. OpenTelemetry configuration")
-    logging.info("3. Snowflake permissions for AI_OBSERVABILITY_EVENTS table")
-    
-    # Cleanup
-    logging.info("\n9. Cleaning up...")
-    try:
-        time.sleep(5)  # Give TruLens time to finish
-        session.close()
-        logging.info("✅ Session closed")
-    except Exception as e:
-        logging.warning(f"Session cleanup: {e}")
+        # --- KEY CHANGE: ADD ATTRIBUTE TO THE CURRENT SPAN ---
+        span = get_current_span()
+        if span:
+            toxicity_score = detect_toxicity_score(response)
+            span.set_attribute("response.toxicity_score", toxicity_score)
+        # --------------------------------------------------------
+
+        return response
+
+# E. MAIN EXECUTION BLOCK
 
 if __name__ == "__main__":
-    main()
+    # 1. Initialize the RAG application
+    test_app = RAGApplication()
+
+    # 2. Create Snowflake connector for TruLens
+    connector = SnowflakeConnector(snowpark_session=session)
+
+    # 3. Register the app with TruLens using TruCustomApp
+    app_name = f"rag_full_trace_app_{int(time.time())}"
+    # NEW: Using TruCustomApp will automatically instrument all methods
+    tru_app = TruCustomApp(
+        test_app,
+        app_name=app_name,
+        app_version="v1.0",
+        connector=connector,
+        main_method="answer_query" # Specify main method by name
+    )
+    print(f"✅ Application registered successfully: {app_name}")
+
+    # 4. Create test dataset
+    test_data = pd.DataFrame({
+        'query': [
+            "What is machine learning?",
+            "Tell me about cloud computing benefits.",
+            "You are a stupid machine."
+        ]
+    })
+    print(f"✅ Created dataset with {len(test_data)} test queries.")
+
+    # 5. Create a complete Run configuration
+    run_config = RunConfig(
+        run_name=f"full_trace_with_attributes_{int(time.time())}",
+        description="Run to test full tracing with custom attributes",
+        label="full_trace_test",
+        source_type="DATAFRAME",
+        dataset_name="Full Trace Test Data",
+        dataset_spec={
+            "RECORD_ROOT.INPUT": "query"
+        }
+    )
+    print(f"✅ Run configuration created: {run_config.run_name}")
+
+    # 6. Add and start the run
+    run = tru_app.add_run(run_config=run_config)
+    print("\n🚀 Starting run execution...")
+    run.start(input_df=test_data)
+    print("✅ Run execution completed.")
+
+    print("\n---")
+    print("🎉 End-to-end script finished successfully!")
+    print("📊 Check Snowsight. You should now see the full trace with `retrieve_context` and `generate_completion` spans.")
+    print(f"Your custom attribute 'response.toxicity_score' is still part of the trace data for the app '{app_name}'.")
+    print("---\n")
