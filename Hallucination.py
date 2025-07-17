@@ -139,14 +139,16 @@ class RAGApplication:
         if not retrieved_contexts:
             retrieved_contexts = self.knowledge_base.get("artificial intelligence", [])
         
-        # Log custom retrieval attributes
+        # Add custom retrieval attributes to current span
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.retrieval_topic", topic if topic in query_lower else "default")
-            telemetry.set_span_attribute("custom.contexts_found", len(retrieved_contexts))
-            print(f"🔍 Retrieval logged: topic={topic if topic in query_lower else 'default'}, contexts={len(retrieved_contexts)}")
+            from opentelemetry import trace
+            current_span = trace.get_current_span()
+            current_span.set_attribute("custom.retrieval_topic", topic if topic in query_lower else "default")
+            current_span.set_attribute("custom.contexts_found", len(retrieved_contexts))
+            current_span.set_attribute("custom.retrieval_success", True)
+            print(f"🔍 Retrieval attributes added: topic={topic if topic in query_lower else 'default'}, contexts={len(retrieved_contexts)}")
         except Exception as e:
-            print(f"⚠️ Could not log retrieval attributes: {e}")
+            print(f"⚠️ Could not add retrieval attributes: {e}")
         
         return retrieved_contexts
 
@@ -164,32 +166,37 @@ Question: {query}
 
 Answer:"""
         
-        # Log generation attributes  
+        # Add generation attributes to current span  
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.llm_model", self.model)
-            telemetry.set_span_attribute("custom.prompt_length", len(prompt))
-            telemetry.set_span_attribute("custom.context_items", len(context_str))
-            print(f"🤖 Generation logged: model={self.model}, prompt_length={len(prompt)}")
+            from opentelemetry import trace
+            current_span = trace.get_current_span()
+            current_span.set_attribute("custom.llm_model", self.model)
+            current_span.set_attribute("custom.prompt_length", len(prompt))
+            current_span.set_attribute("custom.context_items", len(context_str))
+            print(f"🤖 Generation attributes added: model={self.model}, prompt_length={len(prompt)}")
         except Exception as e:
-            print(f"⚠️ Could not log generation attributes: {e}")
+            print(f"⚠️ Could not add generation attributes: {e}")
         
         try:
             response = complete(self.model, prompt)
             
-            # Log response attributes
+            # Add response success attributes
             try:
-                telemetry.set_span_attribute("custom.response_generated", "success")
-                telemetry.set_span_attribute("custom.response_length", len(response))
+                from opentelemetry import trace
+                current_span = trace.get_current_span()
+                current_span.set_attribute("custom.response_generated", "success")
+                current_span.set_attribute("custom.response_length", len(response))
             except:
                 pass
                 
             return response
         except Exception as e:
-            # Log error attributes
+            # Add error attributes
             try:
-                telemetry.set_span_attribute("custom.response_generated", "error")
-                telemetry.set_span_attribute("custom.error_message", str(e))
+                from opentelemetry import trace
+                current_span = trace.get_current_span()
+                current_span.set_attribute("custom.response_generated", "error")
+                current_span.set_attribute("custom.error_message", str(e))
             except:
                 pass
             return f"Error generating response: {str(e)}"
@@ -210,23 +217,24 @@ Answer:"""
         
         print(f"🔍 Processing query from user: {username}")
         
-        # CRITICAL: Add custom attributes to the trace for logging in Snowflake
-        # This is how custom metadata gets captured in AI Observability
+        # CORRECT WAY: Add custom attributes to current span using OpenTelemetry API
         try:
-            from snowflake import telemetry
-            # Log username as custom trace attribute
-            telemetry.set_span_attribute("custom.username", username)
-            telemetry.set_span_attribute("custom.query_length", len(query))
+            from opentelemetry import trace
+            current_span = trace.get_current_span()
+            
+            # Add custom attributes to the current span
+            current_span.set_attribute("custom.username", username)
+            current_span.set_attribute("custom.query_length", len(query))
+            current_span.set_attribute("custom.processing_timestamp", str(time.time()))
             
             # Detect toxicity and log result
             toxicity_result = self.detect_toxicity(query)
-            telemetry.set_span_attribute("custom.toxicity_detected", toxicity_result)
-            telemetry.set_span_attribute("custom.processing_timestamp", str(time.time()))
+            current_span.set_attribute("custom.toxicity_detected", toxicity_result)
             
-            print(f"✅ Custom attributes logged: username={username}, toxicity={toxicity_result}")
+            print(f"✅ Custom attributes added to span: username={username}, toxicity={toxicity_result}")
             
         except Exception as e:
-            print(f"⚠️ Could not log custom attributes: {e}")
+            print(f"⚠️ Could not add custom attributes to span: {e}")
         
         # Detect toxicity
         toxicity_result = self.detect_toxicity(query)
@@ -235,27 +243,18 @@ Answer:"""
         context_str = self.retrieve_context(query)
         response = self.generate_completion(query, context_str)
         
-        # Log additional custom attributes after processing
+        # Add more custom attributes after processing
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.response_length", len(response))
-            telemetry.set_span_attribute("custom.context_count", len(context_str))
+            from opentelemetry import trace
+            current_span = trace.get_current_span()
+            current_span.set_attribute("custom.response_length", len(response))
+            current_span.set_attribute("custom.context_count", len(context_str))
+            current_span.set_attribute("custom.processing_complete", True)
             
-            # Add custom event for tracking
-            telemetry.add_event(
-                "custom_rag_processing", 
-                {
-                    "username": username,
-                    "toxicity": toxicity_result,
-                    "query_length": len(query),
-                    "response_length": len(response),
-                    "context_items": len(context_str)
-                }
-            )
-            print(f"✅ Custom processing event logged")
+            print(f"✅ Processing complete attributes added to span")
             
         except Exception as e:
-            print(f"⚠️ Could not log processing event: {e}")
+            print(f"⚠️ Could not add processing complete attributes: {e}")
         
         print(f"✅ Response generated for user {username} (toxicity: {toxicity_result})")
         
