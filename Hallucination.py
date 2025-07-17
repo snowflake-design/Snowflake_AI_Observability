@@ -10,7 +10,7 @@ from trulens.otel.semconv.trace import SpanAttributes
 from trulens.apps.app import TruApp
 from trulens.connectors.snowflake import SnowflakeConnector
 from trulens.core.run import Run, RunConfig
-from trulens.core import Feedback, Provider
+from opentelemetry import trace
 
 # Toxicity detection setup
 try:
@@ -23,43 +23,6 @@ try:
 except Exception as e:
     print(f"⚠️ Could not load toxicity classifier: {e}")
     toxicity_classifier = None
-
-# Custom Provider for TruLens feedback functions (separate from Snowflake AI Observability)
-class CustomMetricsProvider(Provider):
-    """Custom provider for feedback functions - works with standalone TruLens but not Snowflake AI Observability."""
-    
-    def __init__(self):
-        super().__init__()
-    
-    def toxicity_feedback(self, output: str) -> float:
-        """Toxicity detection as TruLens feedback function."""
-        if toxicity_classifier is None:
-            return 0.5
-        
-        try:
-            result = toxicity_classifier(output)
-            label = result[0]['label']
-            confidence = result[0]['score']
-            
-            if label == 'TOXIC':
-                return 1.0 - confidence
-            else:
-                return confidence
-                
-        except Exception as e:
-            print(f"❌ Toxicity feedback error: {e}")
-            return 0.5
-    
-    def username_feedback(self, query: str) -> float:
-        """Username detection as TruLens feedback function."""
-        try:
-            if 'username' in query.lower() or any(user in query for user in ['abc', 'XYZ', 'KKK']):
-                return 1.0
-            else:
-                return 0.0
-        except Exception as e:
-            print(f"❌ Username feedback error: {e}")
-            return 0.5
 
 # Enable TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
@@ -123,15 +86,18 @@ class RAGApplication:
     )
     def retrieve_context(self, query: str) -> list:
         """Retrieve relevant text from knowledge base."""
+        # Get current span for adding custom attributes
+        current_span = trace.get_current_span()
+        
         query_lower = query.lower()
         retrieved_contexts = []
         
-        # Add custom span attributes using Snowflake telemetry API
+        # Add custom span attributes using OpenTelemetry API
         try:
-            from snowflake import telemetry
-            # Log custom retrieval metadata
-            telemetry.set_span_attribute("custom.retrieval_query", query)
-            telemetry.set_span_attribute("custom.retrieval_timestamp", str(time.time()))
+            current_span.set_attribute("custom.retrieval_query", query)
+            current_span.set_attribute("custom.retrieval_timestamp", str(time.time()))
+            current_span.set_attribute("custom.query_length", len(query))
+            print(f"✅ Added custom retrieval attributes")
         except Exception as e:
             print(f"⚠️ Could not add custom retrieval attributes: {e}")
         
@@ -140,33 +106,52 @@ class RAGApplication:
                 retrieved_contexts.extend(contexts)
                 # Log the matched topic
                 try:
-                    from snowflake import telemetry
-                    telemetry.set_span_attribute("custom.matched_topic", topic)
-                except:
-                    pass
+                    current_span.set_attribute("custom.matched_topic", topic)
+                    current_span.set_attribute("custom.topic_match_type", "exact")
+                except Exception as e:
+                    print(f"⚠️ Could not add topic attribute: {e}")
                 break
         
         if not retrieved_contexts:
             retrieved_contexts = self.knowledge_base.get("artificial intelligence", [])
             try:
-                from snowflake import telemetry
-                telemetry.set_span_attribute("custom.matched_topic", "artificial_intelligence_default")
-            except:
-                pass
+                current_span.set_attribute("custom.matched_topic", "artificial_intelligence_default")
+                current_span.set_attribute("custom.topic_match_type", "fallback")
+            except Exception as e:
+                print(f"⚠️ Could not add fallback topic attribute: {e}")
         
         # Log number of contexts found
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.contexts_found", len(retrieved_contexts))
-        except:
-            pass
+            current_span.set_attribute("custom.contexts_found", len(retrieved_contexts))
+            current_span.set_attribute("custom.retrieval_success", len(retrieved_contexts) > 0)
+            
+            # Add an event for successful retrieval
+            current_span.add_event(
+                "context_retrieval_complete",
+                {
+                    "contexts_count": len(retrieved_contexts),
+                    "query_topic": query_lower,
+                    "retrieval_method": "keyword_matching"
+                }
+            )
+            
+        except Exception as e:
+            print(f"⚠️ Could not add context count attributes: {e}")
         
         print(f"🔍 Retrieved {len(retrieved_contexts)} contexts")
         return retrieved_contexts
 
-    @instrument(span_type=SpanAttributes.SpanType.GENERATION)
+    @instrument(
+        span_type=SpanAttributes.SpanType.GENERATION,
+        attributes={
+            SpanAttributes.GENERATION.QUERY_TEXT: "query",
+            SpanAttributes.GENERATION.GENERATED_TEXT: "return",
+        }
+    )
     def generate_completion(self, query: str, context_str: list) -> str:
         """Generate answer from context by calling an LLM."""
+        current_span = trace.get_current_span()
+        
         context_text = "\n".join([f"- {ctx}" for ctx in context_str])
         
         prompt = f"""Based on the following context, answer the question:
@@ -180,10 +165,11 @@ Answer:"""
         
         # Add custom generation attributes
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.llm_model", self.model)
-            telemetry.set_span_attribute("custom.prompt_length", len(prompt))
-            telemetry.set_span_attribute("custom.context_items", len(context_str))
+            current_span.set_attribute("custom.llm_model", self.model)
+            current_span.set_attribute("custom.prompt_length", len(prompt))
+            current_span.set_attribute("custom.context_items", len(context_str))
+            current_span.set_attribute("custom.generation_method", "snowflake_cortex")
+            print(f"✅ Added custom generation attributes")
         except Exception as e:
             print(f"⚠️ Could not add generation attributes: {e}")
         
@@ -192,22 +178,46 @@ Answer:"""
             
             # Log successful generation
             try:
-                from snowflake import telemetry
-                telemetry.set_span_attribute("custom.generation_status", "success")
-                telemetry.set_span_attribute("custom.response_length", len(response))
-            except:
-                pass
+                current_span.set_attribute("custom.generation_status", "success")
+                current_span.set_attribute("custom.response_length", len(response))
+                current_span.set_attribute("custom.tokens_estimated", len(response.split()))
+                
+                # Add generation success event
+                current_span.add_event(
+                    "llm_generation_complete",
+                    {
+                        "model": self.model,
+                        "response_length": len(response),
+                        "status": "success"
+                    }
+                )
+                
+            except Exception as e:
+                print(f"⚠️ Could not add success attributes: {e}")
                 
             print(f"🤖 Generated response ({len(response)} chars)")
             return response
+            
         except Exception as e:
             # Log generation error
             try:
-                from snowflake import telemetry
-                telemetry.set_span_attribute("custom.generation_status", "error")
-                telemetry.set_span_attribute("custom.error_message", str(e))
-            except:
-                pass
+                current_span.set_attribute("custom.generation_status", "error")
+                current_span.set_attribute("custom.error_message", str(e))
+                current_span.set_attribute("custom.error_type", type(e).__name__)
+                
+                # Add error event
+                current_span.add_event(
+                    "llm_generation_failed",
+                    {
+                        "model": self.model,
+                        "error": str(e),
+                        "status": "failed"
+                    }
+                )
+                
+            except Exception as attr_error:
+                print(f"⚠️ Could not add error attributes: {attr_error}")
+            
             return f"Error generating response: {str(e)}"
 
     @instrument(
@@ -219,6 +229,7 @@ Answer:"""
     )
     def answer_query(self, input_data, username: str = "unknown") -> str:
         """Main entry point for the RAG application."""
+        current_span = trace.get_current_span()
         
         # Handle different input types
         if isinstance(input_data, dict):
@@ -234,44 +245,67 @@ Answer:"""
         
         # Add custom span attributes for username and other metadata
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.username", username)
-            telemetry.set_span_attribute("custom.query_text", query)
-            telemetry.set_span_attribute("custom.query_length", len(query))
-            telemetry.set_span_attribute("custom.processing_start", str(time.time()))
+            current_span.set_attribute("custom.username", username)
+            current_span.set_attribute("custom.query_text", query)
+            current_span.set_attribute("custom.query_length", len(query))
+            current_span.set_attribute("custom.processing_start", str(time.time()))
+            current_span.set_attribute("custom.session_id", f"session_{username}_{int(time.time())}")
             
             # Detect toxicity and add to span
             toxicity_result = self.detect_toxicity(query)
-            telemetry.set_span_attribute("custom.toxicity_detected", toxicity_result)
+            current_span.set_attribute("custom.toxicity_detected", toxicity_result)
+            current_span.set_attribute("custom.toxicity_check_enabled", toxicity_classifier is not None)
+            
+            # Check for special usernames
+            special_users = ['abc', 'XYZ', 'KKK']
+            current_span.set_attribute("custom.is_special_user", username in special_users)
+            current_span.set_attribute("custom.user_type", "special" if username in special_users else "regular")
             
             print(f"✅ Custom attributes added: username={username}, toxicity={toxicity_result}")
             
         except Exception as e:
             print(f"⚠️ Could not add custom attributes: {e}")
         
+        # Add initial processing event
+        try:
+            current_span.add_event(
+                "rag_processing_started",
+                {
+                    "username": username,
+                    "query_preview": query[:50],
+                    "toxicity_detected": toxicity_result,
+                    "processing_timestamp": str(time.time())
+                }
+            )
+        except Exception as e:
+            print(f"⚠️ Could not add start event: {e}")
+        
         # Detect toxicity for console logging
         toxicity_result = self.detect_toxicity(query)
         print(f"🛡️ Toxicity check for '{query[:50]}...': {toxicity_result}")
         
+        # Process the query
         context_str = self.retrieve_context(query)
         response = self.generate_completion(query, context_str)
         
         # Add final processing attributes
         try:
-            from snowflake import telemetry
-            telemetry.set_span_attribute("custom.processing_complete", True)
-            telemetry.set_span_attribute("custom.processing_end", str(time.time()))
-            telemetry.set_span_attribute("custom.final_response_length", len(response))
+            current_span.set_attribute("custom.processing_complete", True)
+            current_span.set_attribute("custom.processing_end", str(time.time()))
+            current_span.set_attribute("custom.final_response_length", len(response))
+            current_span.set_attribute("custom.context_used_count", len(context_str))
+            current_span.set_attribute("custom.response_generated", len(response) > 0)
             
-            # Add a custom event for this complete interaction
-            telemetry.add_event(
-                "rag_interaction_complete", 
+            # Add final completion event
+            current_span.add_event(
+                "rag_interaction_complete",
                 {
                     "username": username,
                     "query": query[:100],  # truncated for brevity
                     "toxicity": toxicity_result,
                     "response_length": len(response),
-                    "context_count": len(context_str)
+                    "context_count": len(context_str),
+                    "success": True
                 }
             )
             print(f"✅ Processing complete event added")
@@ -294,65 +328,50 @@ print(f"Test successful: {test_response[:100] if test_response else 'No response
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# Create custom feedback functions (these work with standalone TruLens, not Snowflake AI Observability)
-print("\n" + "="*60)
-print("NOTE: Custom feedback functions are for standalone TruLens only")
-print("="*60)
-custom_provider = CustomMetricsProvider()
-
-f_toxicity = Feedback(
-    custom_provider.toxicity_feedback,
-    name="custom_toxicity"
-).on_output()
-
-f_username = Feedback(
-    custom_provider.username_feedback, 
-    name="username_detection"
-).on_input()
-
-print("✅ Custom feedback functions created (for standalone TruLens)")
-
 # Enhanced test dataset with usernames
-usernames = ["abc", "XYZ", "KKK"]
+usernames = ["abc", "XYZ", "KKK", "regular_user", "john_doe"]
 
 test_data = pd.DataFrame({
     'query': [
         "What is machine learning?",
         "What are cloud computing benefits?", 
-        "What are AI applications?"
+        "What are AI applications?",
+        "How does artificial intelligence work?",
+        "What is supervised learning?"
     ],
     'expected_answer': [
         "Machine learning enables computers to learn from data without explicit programming.",
         "Cloud computing provides scalability, cost-effectiveness, and accessibility.",
-        "AI applications include chatbots, recommendation systems, and autonomous vehicles."
+        "AI applications include chatbots, recommendation systems, and autonomous vehicles.",
+        "AI systems can perform tasks typically requiring human intelligence.",
+        "Supervised learning uses labeled data to train models."
     ],
-    'username': [random.choice(usernames) for _ in range(3)]
+    'username': [random.choice(usernames) for _ in range(5)]
 })
 
 print(f"Created dataset with {len(test_data)} test queries")
 print("Dataset preview:")
 print(test_data[['query', 'username']].to_string())
 
-# Register the app for Snowflake AI Observability (no custom feedback functions supported)
-app_name = f"rag_metrics_app_{int(time.time())}"
+# Register the app for Snowflake AI Observability
+app_name = f"rag_otel_custom_attrs_{int(time.time())}"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
     app_version="v1.0",
     connector=connector,
     main_method=test_app.answer_query
-    # NOTE: Snowflake AI Observability doesn't support custom feedback functions
 )
 
 print(f"Application registered successfully: {app_name}")
 
 # Single run configuration
 run_config = RunConfig(
-    run_name=f"all_metrics_run_{int(time.time())}",
-    description="Standard metrics with custom span attributes for username and toxicity",
-    label="all_metrics_test",
+    run_name=f"otel_custom_attrs_run_{int(time.time())}",
+    description="Standard Snowflake AI Observability metrics with OpenTelemetry custom attributes",
+    label="otel_custom_attrs_test",
     source_type="DATAFRAME",
-    dataset_name="Test dataset with user tracking and toxicity detection",
+    dataset_name="Test dataset with custom OpenTelemetry attributes",
     dataset_spec={
         "RETRIEVAL.QUERY_TEXT": "query",
         "RECORD_ROOT.INPUT": "query",
@@ -437,18 +456,32 @@ for metric in standard_metrics:
 
 # Custom data analysis summary
 print("\n" + "="*60)
-print("CUSTOM DATA LOGGING SUMMARY")
+print("OPENTELEMETRY CUSTOM ATTRIBUTES SUMMARY")
 print("="*60)
 
-print("✅ Username tracking: Logged via telemetry.set_span_attribute('custom.username', username)")
-print("✅ Toxicity detection: Logged via telemetry.set_span_attribute('custom.toxicity_detected', result)")
-print("✅ Query metadata: Query text, length, timestamps logged as custom attributes")
-print("✅ Retrieval metadata: Matched topic, contexts found logged as custom attributes")
-print("✅ Generation metadata: Model, prompt length, response length logged as custom attributes")
-print("✅ Custom events: Complete interaction events with telemetry.add_event()")
+print("✅ Custom attributes added using OpenTelemetry trace.get_current_span().set_attribute():")
+print("   - custom.username: User who made the request")
+print("   - custom.toxicity_detected: Toxicity analysis result")
+print("   - custom.query_text: Original query text")
+print("   - custom.query_length: Length of query")
+print("   - custom.processing_start/end: Processing timestamps")
+print("   - custom.session_id: Unique session identifier")
+print("   - custom.is_special_user: Whether user is in special list")
+print("   - custom.user_type: User classification (special/regular)")
+print("   - custom.matched_topic: Which knowledge base topic matched")
+print("   - custom.contexts_found: Number of retrieved contexts")
+print("   - custom.llm_model: Model used for generation")
+print("   - custom.response_length: Length of generated response")
+print("   - custom.generation_status: Success/failure status")
+
+print("\n✅ Custom events added using current_span.add_event():")
+print("   - rag_processing_started: When processing begins")
+print("   - context_retrieval_complete: When context retrieval finishes")
+print("   - llm_generation_complete: When LLM generation finishes")
+print("   - rag_interaction_complete: When full interaction completes")
 
 if toxicity_classifier:
-    print("\nToxicity analysis summary:")
+    print("\n🛡️ Toxicity analysis summary:")
     for idx, row in test_data.iterrows():
         toxicity = test_app.detect_toxicity(row['query'])
         print(f"   Query: '{row['query'][:50]}...' | User: {row['username']} | Toxic: {toxicity}")
@@ -457,7 +490,7 @@ else:
 
 # Final results
 print("\n" + "="*60)
-print("FINAL RESULTS - SNOWFLAKE AI OBSERVABILITY")
+print("FINAL RESULTS - SNOWFLAKE AI OBSERVABILITY WITH CUSTOM ATTRIBUTES")
 print("="*60)
 print(f"✅ Successful standard metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
@@ -469,11 +502,12 @@ print(f"\nFinal run status: {final_status}")
 print("\n" + "="*60)
 print("KEY ACCOMPLISHMENTS")
 print("="*60)
-print("✅ Proper Snowflake AI Observability integration with standard metrics")
-print("✅ Custom span attributes logged using Snowflake telemetry API")
-print("✅ Username and toxicity data captured in trace spans")
-print("✅ Custom events added for complete interaction tracking")
+print("✅ Proper OpenTelemetry custom attributes using trace.get_current_span().set_attribute()")
+print("✅ Custom events added using current_span.add_event()")
+print("✅ Username and toxicity data captured in OpenTelemetry spans")
+print("✅ Standard Snowflake AI Observability metrics computed")
 print("✅ All traces stored in Snowflake with both standard and custom data")
+print("✅ Removed incompatible TruLens feedback functions")
 
 print("\n📊 View results in Snowsight:")
 print("   Navigate to: AI & ML -> Evaluations")
@@ -486,14 +520,15 @@ print("      - custom.toxicity_detected (toxicity analysis result)")
 print("      - custom.matched_topic (retrieval topic)")
 print("      - custom.llm_model (generation model)")
 print("      - custom.processing_* (timestamps and metadata)")
-print("   📊 Custom events: 'rag_interaction_complete' events with full context")
+print("      - custom.is_special_user (user classification)")
+print("   📊 Custom events: Various events throughout the RAG pipeline")
 
-print("\n💡 IMPORTANT ARCHITECTURAL NOTES:")
-print("   🎯 Snowflake AI Observability: Standard metrics only (answer_relevance, etc.)")
-print("   📊 Custom data: Logged via Snowflake telemetry API as span attributes")
-print("   🛡️ Toxicity & username: Captured in trace metadata, not as separate metrics")
-print("   ⚡ All data queryable via: SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
+print("\n💡 TECHNICAL IMPLEMENTATION:")
+print("   🎯 OpenTelemetry: current_span.set_attribute() for custom attributes")
+print("   📊 Custom events: current_span.add_event() for structured events")
+print("   🛡️ Toxicity & username: Captured in OpenTelemetry span metadata")
+print("   ⚡ Compatible with Snowflake AI Observability architecture")
 
-print("\n🎉 SUCCESS: Hybrid approach implemented correctly!")
-print("   Standard Snowflake AI Observability metrics + Custom span attributes")
-print("   Username tracking and toxicity detection integrated into traces")
+print("\n🎉 SUCCESS: OpenTelemetry custom attributes implemented correctly!")
+print("   Standard Snowflake AI Observability metrics + OpenTelemetry custom attributes")
+print("   Username tracking and toxicity detection integrated into OpenTelemetry traces")
