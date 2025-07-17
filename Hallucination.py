@@ -60,7 +60,7 @@ def detect_toxicity_score(text: str) -> float:
     
     Returns:
         -1.0 if classifier is unavailable or text is empty.
-        A score from 0.0 (likely toxic) to 1.0 (likely not toxic).
+        A score from 0.0 (not toxic) to 1.0 (highly toxic).
     """
     if toxicity_classifier is None or not text:
         return -1.0 
@@ -185,11 +185,15 @@ if __name__ == "__main__":
     })
     print(f"✅ Created dataset with {len(test_data)} test queries.")
 
-    # 5. Create a Run configuration
+    # 5. Create a complete Run configuration (with corrected fields)
     run_config = RunConfig(
         run_name=f"trace_with_custom_attributes_{int(time.time())}",
-        label="custom_attribute_test"
+        description="Run to test custom attributes in traces",
+        label="custom_attribute_test",
+        source_type="DATAFRAME", # REQUIRED: Tells Snowflake the input source
+        dataset_name="Custom Attribute Test Data" # REQUIRED: A name for the dataset
     )
+    print(f"✅ Run configuration created: {run_config.run_name}")
 
     # 6. Add and start the run
     run = tru_app.add_run(run_config=run_config)
@@ -202,5 +206,3 @@ if __name__ == "__main__":
     print("📊 Check Snowsight under 'AI & ML' -> 'Evaluations' for your application's trace.")
     print(f"Your custom attribute 'response.toxicity_score' is now part of the trace data for the app '{app_name}'.")
     print("---\n")
-
-
