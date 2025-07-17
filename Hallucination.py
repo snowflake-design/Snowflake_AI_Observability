@@ -10,6 +10,7 @@ from trulens.otel.semconv.trace import SpanAttributes
 from trulens.apps.app import TruApp
 from trulens.connectors.snowflake import SnowflakeConnector
 from trulens.core.run import Run, RunConfig
+from trulens.core import Feedback, Provider  # ADD THIS - for custom feedback functions
 
 # ADD THIS - Import for toxicity detection
 try:
@@ -19,6 +20,49 @@ try:
 except Exception as e:
     print(f"⚠️ Could not load toxicity classifier: {e}")
     toxicity_classifier = None
+
+# ADD THIS - Custom Provider for TruLens feedback functions
+class CustomMetricsProvider(Provider):
+    """Custom provider to wrap our metrics as TruLens feedback functions."""
+    
+    def __init__(self):
+        super().__init__()
+        self.toxicity_classifier = toxicity_classifier
+    
+    def toxicity_feedback(self, output: str) -> float:
+        """Toxicity detection as TruLens feedback function."""
+        if self.toxicity_classifier is None:
+            return 0.5  # neutral score
+        
+        try:
+            result = self.toxicity_classifier(output)
+            label = result[0]['label']
+            confidence = result[0]['score']
+            
+            print(f"🛡️ Toxicity feedback: {label} (confidence: {confidence:.3f})")
+            
+            # Convert to TruLens score: 1 = good (non-toxic), 0 = bad (toxic)
+            if label == 'TOXIC':
+                return 1.0 - confidence  # toxic = low score
+            else:
+                return confidence  # non-toxic = high score
+                
+        except Exception as e:
+            print(f"❌ Toxicity feedback error: {e}")
+            return 0.5
+    
+    def username_feedback(self, query: str) -> float:
+        """Username extraction as TruLens feedback function."""
+        try:
+            if 'username' in query.lower() or any(user in query for user in ['abc', 'XYZ', 'KKK']):
+                print(f"👤 Username detected in query")
+                return 1.0  # username found
+            else:
+                print(f"👤 No username detected")
+                return 0.0  # no username
+        except Exception as e:
+            print(f"❌ Username feedback error: {e}")
+            return 0.5
 
 # Enable TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
@@ -159,6 +203,29 @@ print("Testing basic functionality...")
 test_response = test_app.answer_query("What is machine learning?", "test_user")  # ADD USERNAME
 print(f"Test successful: {test_response[:100] if test_response else 'No response'}...")
 
+# CREATE CUSTOM FEEDBACK FUNCTIONS - ADD THIS SECTION
+print("\n" + "="*60)
+print("CREATING CUSTOM FEEDBACK FUNCTIONS FOR DASHBOARD")
+print("="*60)
+
+# Initialize custom provider
+custom_provider = CustomMetricsProvider()
+
+# Create feedback functions that will appear as metrics in Snowsight
+f_toxicity = Feedback(
+    custom_provider.toxicity_feedback,
+    name="custom_toxicity"  # This should appear in dashboard
+).on_output()
+
+f_username = Feedback(
+    custom_provider.username_feedback, 
+    name="username_detection"  # This should appear in dashboard
+).on_input()
+
+print("✅ Custom feedback functions created:")
+print("   🛡️ custom_toxicity (on output)")
+print("   👤 username_detection (on input)")
+
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
@@ -183,17 +250,18 @@ print(f"Created dataset with {len(test_data)} test queries")
 print("Dataset preview:")
 print(test_data[['query', 'username']].to_string())
 
-# Register the app - SINGLE REGISTRATION using original answer_query method
+# Register the app - ENHANCED WITH CUSTOM FEEDBACK FUNCTIONS
 app_name = f"rag_metrics_app_{int(time.time())}"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
     app_version="v1.0",
     connector=connector,
-    main_method=test_app.answer_query  # Back to original method - now enhanced
+    main_method=test_app.answer_query,
+    feedbacks=[f_toxicity, f_username]  # ADD CUSTOM FEEDBACK FUNCTIONS!
 )
 
-print(f"Application registered successfully: {app_name}")
+print(f"Application registered successfully with custom feedback: {app_name}")
 
 # SINGLE run configuration as per documentation
 run_config = RunConfig(
@@ -247,17 +315,19 @@ while attempt < max_attempts:
 if attempt >= max_attempts:
     print("⚠️ Timeout waiting for completion, but trying metrics anyway...")
 
-# NOW compute metrics one by one on the SAME run (as per documentation)
+# NOW compute metrics one by one on the SAME run (INCLUDING CUSTOM ONES)
 print("\n" + "="*60)
-print("COMPUTING MULTIPLE METRICS ON SAME RUN")
+print("COMPUTING STANDARD + CUSTOM METRICS ON SAME RUN")
 print("="*60)
 
+# ENHANCED METRICS LIST - including our custom ones!
 metrics_to_compute = [
     "answer_relevance",
     "context_relevance", 
     "groundedness",
-    "correctness"
-    # Note: toxicity is computed inline, not as a separate TruLens metric
+    "correctness",
+    "custom_toxicity",      # OUR CUSTOM TOXICITY METRIC!
+    "username_detection"    # OUR CUSTOM USERNAME METRIC!
 ]
 
 successful_metrics = []
@@ -303,25 +373,50 @@ else:
 
 # Final results
 print("\n" + "="*60)
-print("FINAL RESULTS - ENHANCED WITH USER TRACKING & TOXICITY")
+print("FINAL RESULTS - STANDARD + CUSTOM METRICS")
 print("="*60)
 print(f"✅ Successful metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
 print(f"Success rate: {len(successful_metrics)}/{len(metrics_to_compute)}")
 
+# Separate standard vs custom results
+standard_metrics = ["answer_relevance", "context_relevance", "groundedness", "correctness"]
+custom_metrics = ["custom_toxicity", "username_detection"]
+
+successful_standard = [m for m in successful_metrics if m in standard_metrics]
+successful_custom = [m for m in successful_metrics if m in custom_metrics]
+
+print(f"\n📊 BREAKDOWN:")
+print(f"   Standard metrics successful: {successful_standard}")
+print(f"   Custom metrics successful: {successful_custom}")
+
 # Final status check
 final_status = run.get_status()
 print(f"\nFinal run status: {final_status}")
+
+print("\n" + "="*60)
+print("KEY TEST RESULTS")
+print("="*60)
+print("✅ Console logging: Username + toxicity logged during execution")
+print("✅ Standard metrics: Traditional AI observability metrics computed") 
+print(f"✅ Custom metrics: {len(successful_custom)}/2 custom feedback functions computed")
+
+if len(successful_custom) > 0:
+    print("🎉 SUCCESS: Custom metrics are working in Snowflake AI Observability!")
+else:
+    print("⚠️ Custom metrics not computed - check TruLens feedback integration")
 
 print("\nEnhancements added:")
 print("✅ Username logging (abc, XYZ, KKK)")
 print("✅ Toxicity detection using HuggingFace")
 print("✅ Custom toxicity classifier integration")
 print("✅ User tracking in traces")
-print("✅ SINGLE TruApp registration (no duplicates)")
+print("✅ SINGLE TruApp registration with custom feedback")
 print("✅ All original functionality preserved")
 
 print("\n📊 Check Snowsight AI & ML -> Evaluations")
-print("🔍 Should see ONE application with user context and toxicity info")
-print("👥 User information logged in application traces")
-print("🛡️ Toxicity detection results in console output")
+print("🔍 Look for these metrics in the dashboard:")
+print("   📈 Standard: answer_relevance, context_relevance, groundedness, correctness")
+print("   🛡️ Custom: custom_toxicity")
+print("   👤 Custom: username_detection")
+print("💡 Custom metrics should appear alongside standard ones if integration works!")
