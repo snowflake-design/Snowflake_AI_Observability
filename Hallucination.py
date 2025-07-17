@@ -198,10 +198,15 @@ print(f"Test successful: {test_response[:100] if test_response else 'No response
 
 # Create Snowflake connector FIRST
 print("\n" + "="*60)
-print("CREATING SNOWFLAKE CONNECTOR")
+print("CREATING SNOWFLAKE CONNECTOR AND SESSION")
 print("="*60)
 connector = SnowflakeConnector(snowpark_session=session)
 print("✅ Snowflake connector created successfully")
+
+# CRITICAL: Create TruSession with connector - This is what was missing!
+from trulens.core import TruSession
+tru_session = TruSession(connector=connector)
+print("✅ TruSession created with Snowflake connector")
 
 # Initialize custom provider
 print("\n" + "="*60)
@@ -245,17 +250,16 @@ print(f"\nCreated dataset with {len(test_data)} test queries")
 print("Dataset preview:")
 print(test_data[['query', 'username']].to_string())
 
-# Register the app - CRITICAL: Pass connector to TruApp constructor
+# Register the app - CRITICAL: Use tru_session.App instead of TruApp
 print("\n" + "="*60)
 print("REGISTERING APPLICATION WITH SNOWFLAKE")
 print("="*60)
 
 app_name = f"rag_metrics_app_{int(time.time())}"
-tru_app = TruApp(
+tru_app = tru_session.App(
     test_app,
     app_name=app_name, 
     app_version="v1.0",
-    connector=connector,  # CRITICAL: This fixes the error
     main_method=test_app.answer_query,
     feedbacks=[f_toxicity, f_username]  # Custom feedback functions
 )
