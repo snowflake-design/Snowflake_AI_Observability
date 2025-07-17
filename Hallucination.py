@@ -5,8 +5,6 @@ import random
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
-from trulens.core.otel.instrument import instrument
-from trulens.otel.semconv.trace import SpanAttributes
 from trulens.apps.app import TruApp
 from trulens.connectors.snowflake import SnowflakeConnector
 from trulens.core.run import Run, RunConfig
@@ -14,7 +12,6 @@ from trulens.core.run import Run, RunConfig
 # NEW: Import for TruLens Feedback
 from trulens_eval import Feedback
 from trulens_eval.feedback.provider.cortex import Cortex as CortexProvider # For LLM-as-a-judge metrics
-from opentelemetry import trace
 
 # Toxicity detection setup
 try:
@@ -28,9 +25,6 @@ except Exception as e:
     print(f"⚠️ Could not load toxicity classifier: {e}")
     toxicity_classifier = None
 
-# Enable TruLens OpenTelemetry tracing
-os.environ = "1"
-
 # Get Snowflake session
 try:
     session = get_active_session()
@@ -39,6 +33,15 @@ except:
     print("Creating new Snowflake session...")
     # IMPORTANT: Replace SNOWFLAKE_CONFIG with your actual Snowflake connection configuration
     # Example: SNOWFLAKE_CONFIG = {"account": "your_account", "user": "your_user", "password": "your_password", "role": "your_role", "warehouse": "your_warehouse", "database": "your_database", "schema": "your_schema"}
+    SNOWFLAKE_CONFIG = {
+        "account": os.environ.get("SNOWFLAKE_ACCOUNT"),
+        "user": os.environ.get("SNOWFLAKE_USER"),
+        "password": os.environ.get("SNOWFLAKE_PASSWORD"),
+        "role": os.environ.get("SNOWFLAKE_ROLE"),
+        "warehouse": os.environ.get("SNOWFLAKE_WAREHOUSE"),
+        "database": os.environ.get("SNOWFLAKE_DATABASE"),
+        "schema": os.environ.get("SNOWFLAKE_SCHEMA")
+    }
     session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
 
 print(f"Current context: {session.get_current_database()}.{session.get_current_schema()}")
@@ -53,7 +56,11 @@ class RAGApplication:
                 "ML algorithms can identify patterns in large datasets and make predictions or decisions based on those patterns.",
                 "Common types include supervised learning, unsupervised learning, and reinforcement learning."
             ],
-            "cloud computing":,
+            "cloud computing": [
+                "Cloud computing is the on-demand delivery of IT resources over the Internet with pay-as-you-go pricing.",
+                "Instead of buying, owning, and maintaining physical data centers and servers, you can access technology services from a cloud provider.",
+                "Major cloud providers include Amazon Web Services (AWS), Microsoft Azure, and Google Cloud Platform (GCP)."
+            ],
             "artificial intelligence": [
                 "AI refers to computer systems that can perform tasks typically requiring human intelligence.",
                 "AI encompasses machine learning, natural language processing, computer vision, and robotics.",
@@ -67,7 +74,7 @@ class RAGApplication:
             return "unknown"
         
         try:
-            result = toxicity_classifier(text)
+            result = toxicity_classifier(text)[0]
             label = result['label']
             confidence = result['score']
             
@@ -79,76 +86,26 @@ class RAGApplication:
             print(f"Error in toxicity detection: {e}")
             return "unknown"
 
-    @instrument(
-        span_type=SpanAttributes.SpanType.RETRIEVAL,
-        attributes={
-            SpanAttributes.RETRIEVAL.QUERY_TEXT: "query",
-            SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS: "return",
-        }
-    )
+    # Removed @instrument decorator and OpenTelemetry specific code
     def retrieve_context(self, query: str) -> list:
         """Retrieve relevant text from knowledge base."""
-        current_span = trace.get_current_span()
-        
         query_lower = query.lower()
-        retrieved_contexts =
-        
-        try:
-            current_span.set_attribute("custom.retrieval_query", query)
-            current_span.set_attribute("custom.retrieval_timestamp", str(time.time()))
-            current_span.set_attribute("custom.query_length", len(query))
-            print(f"✅ Added custom retrieval attributes")
-        except Exception as e:
-            print(f"⚠️ Could not add custom retrieval attributes: {e}")
+        retrieved_contexts = []
         
         for topic, contexts in self.knowledge_base.items():
             if topic in query_lower:
                 retrieved_contexts.extend(contexts)
-                try:
-                    current_span.set_attribute("custom.matched_topic", topic)
-                    current_span.set_attribute("custom.topic_match_type", "exact")
-                except Exception as e:
-                    print(f"⚠️ Could not add topic attribute: {e}")
                 break
         
         if not retrieved_contexts:
-            retrieved_contexts = self.knowledge_base.get("artificial intelligence",)
-            try:
-                current_span.set_attribute("custom.matched_topic", "artificial_intelligence_default")
-                current_span.set_attribute("custom.topic_match_type", "fallback")
-            except Exception as e:
-                print(f"⚠️ Could not add fallback topic attribute: {e}")
-        
-        try:
-            current_span.set_attribute("custom.contexts_found", len(retrieved_contexts))
-            current_span.set_attribute("custom.retrieval_success", len(retrieved_contexts) > 0)
-            
-            current_span.add_event(
-                "context_retrieval_complete",
-                {
-                    "contexts_count": len(retrieved_contexts),
-                    "query_topic": query_lower,
-                    "retrieval_method": "keyword_matching"
-                }
-            )
-            
-        except Exception as e:
-            print(f"⚠️ Could not add context count attributes: {e}")
+            retrieved_contexts = self.knowledge_base.get("artificial intelligence", [])
         
         print(f"🔍 Retrieved {len(retrieved_contexts)} contexts")
         return retrieved_contexts
 
-    @instrument(
-        span_type=SpanAttributes.SpanType.GENERATION,
-        attributes={
-            SpanAttributes.GENERATION.QUERY_TEXT: "query",
-            SpanAttributes.GENERATION.GENERATED_TEXT: "return",
-        }
-    )
+    # Removed @instrument decorator and OpenTelemetry specific code
     def generate_completion(self, query: str, context_str: list) -> str:
         """Generate answer from context by calling an LLM."""
-        current_span = trace.get_current_span()
-        
         context_text = "\n".join([f"- {ctx}" for ctx in context_str])
         
         prompt = f"""Based on the following context, answer the question:
@@ -161,67 +118,16 @@ Question: {query}
 Answer:"""
         
         try:
-            current_span.set_attribute("custom.llm_model", self.model)
-            current_span.set_attribute("custom.prompt_length", len(prompt))
-            current_span.set_attribute("custom.context_items", len(context_str))
-            current_span.set_attribute("custom.generation_method", "snowflake_cortex")
-            print(f"✅ Added custom generation attributes")
-        except Exception as e:
-            print(f"⚠️ Could not add generation attributes: {e}")
-        
-        try:
             response = complete(self.model, prompt)
-            
-            try:
-                current_span.set_attribute("custom.generation_status", "success")
-                current_span.set_attribute("custom.response_length", len(response))
-                current_span.set_attribute("custom.tokens_estimated", len(response.split()))
-                
-                current_span.add_event(
-                    "llm_generation_complete",
-                    {
-                        "model": self.model,
-                        "response_length": len(response),
-                        "status": "success"
-                    }
-                )
-                
-            except Exception as attr_error:
-                print(f"⚠️ Could not add success attributes: {attr_error}")
-                
             print(f"🤖 Generated response ({len(response)} chars)")
             return response
             
         except Exception as e:
-            try:
-                current_span.set_attribute("custom.generation_status", "error")
-                current_span.set_attribute("custom.error_message", str(e))
-                current_span.set_attribute("custom.error_type", type(e).__name__)
-                
-                current_span.add_event(
-                    "llm_generation_failed",
-                    {
-                        "model": self.model,
-                        "error": str(e),
-                        "status": "failed"
-                    }
-                )
-                
-            except Exception as attr_error:
-                print(f"⚠️ Could not add error attributes: {attr_error}")
-            
             return f"Error generating response: {str(e)}"
 
-    @instrument(
-        span_type=SpanAttributes.SpanType.RECORD_ROOT,
-        attributes={
-            SpanAttributes.RECORD_ROOT.INPUT: "input_data",
-            SpanAttributes.RECORD_ROOT.OUTPUT: "return",
-        }
-    )
+    # Removed @instrument decorator and OpenTelemetry specific code
     def answer_query(self, input_data, username: str = "unknown") -> str:
         """Main entry point for the RAG application."""
-        current_span = trace.get_current_span()
         
         if isinstance(input_data, dict):
             query = input_data.get('query', '')
@@ -234,66 +140,13 @@ Answer:"""
         
         print(f"🔍 Processing query from user: {username}")
         
-        try:
-            current_span.set_attribute("custom.username", username)
-            current_span.set_attribute("custom.query_text", query)
-            current_span.set_attribute("custom.query_length", len(query))
-            current_span.set_attribute("custom.processing_start", str(time.time()))
-            current_span.set_attribute("custom.session_id", f"session_{username}_{int(time.time())}")
-            
-            # Detect toxicity and add to span (for trace details)
-            toxicity_result_str = self.detect_toxicity(query) # Keep for trace attribute
-            current_span.set_attribute("custom.toxicity_detected", toxicity_result_str)
-            current_span.set_attribute("custom.toxicity_check_enabled", toxicity_classifier is not None)
-            
-            special_users =
-            current_span.set_attribute("custom.is_special_user", username in special_users)
-            current_span.set_attribute("custom.user_type", "special" if username in special_users else "regular")
-            
-            print(f"✅ Custom attributes added: username={username}, toxicity={toxicity_result_str}")
-            
-        except Exception as e:
-            print(f"⚠️ Could not add custom attributes: {e}")
-        
-        try:
-            current_span.add_event(
-                "rag_processing_started",
-                {
-                    "username": username,
-                    "query_preview": query[:50],
-                    "toxicity_detected": toxicity_result_str,
-                    "processing_timestamp": str(time.time())
-                }
-            )
-        except Exception as e:
-            print(f"⚠️ Could not add start event: {e}")
+        # Detect toxicity for console logging (not for dashboard metric here, that's handled by TruLens Feedback)
+        toxicity_result_str = self.detect_toxicity(query)
+        print(f"🛡️ Toxicity check for '{query[:50]}...': {toxicity_result_str}")
         
         # Process the query
         context_str = self.retrieve_context(query)
         response = self.generate_completion(query, context_str)
-        
-        try:
-            current_span.set_attribute("custom.processing_complete", True)
-            current_span.set_attribute("custom.processing_end", str(time.time()))
-            current_span.set_attribute("custom.final_response_length", len(response))
-            current_span.set_attribute("custom.context_used_count", len(context_str))
-            current_span.set_attribute("custom.response_generated", len(response) > 0)
-            
-            current_span.add_event(
-                "rag_interaction_complete",
-                {
-                    "username": username,
-                    "query": query[:100],
-                    "toxicity": toxicity_result_str, # Use the string result for event
-                    "response_length": len(response),
-                    "context_count": len(context_str),
-                    "success": True
-                }
-            )
-            print(f"✅ Processing complete event added")
-            
-        except Exception as e:
-            print(f"⚠️ Could not add completion attributes: {e}")
         
         print(f"✅ Response generated for user {username} (toxicity: {toxicity_result_str})")
         
@@ -321,7 +174,7 @@ def calculate_toxicity_score(text: str) -> float:
         return 0.5 # Neutral score if classifier not loaded
     
     try:
-        result = toxicity_classifier(text) # Get the first (and only) result
+        result = toxicity_classifier(text)[0] # Get the first (and only) result
         label = result['label']
         confidence = result['score']
         
@@ -344,23 +197,19 @@ cortex_provider = CortexProvider(snowpark_session=session)
 # NEW: Define standard LLM-as-a-judge feedback functions
 f_answer_relevance = (
     Feedback(cortex_provider.relevance_with_cot_reasons, name="Answer Relevance")
-   .on_input_output()
+  .on_input_output()
 )
 f_context_relevance = (
     Feedback(cortex_provider.context_relevance_with_cot_reasons, name="Context Relevance")
-   .on_output().on_context()
+  .on(TruApp.select_context).on_input() # Correctly select context and input
 )
 f_groundedness = (
     Feedback(cortex_provider.groundedness_measure_with_cot_reasons, name="Groundedness")
-   .on_output().on_context()
+  .on(TruApp.select_context).on_output() # Correctly select context and output
 )
-# Assuming 'correctness' is also a TruLens feedback function, if not, you'd define it similarly
-# For simplicity, if cortex_provider doesn't have a direct 'correctness' method,
-# you might need to define a custom one or remove it if not applicable.
-# For this example, we'll assume it's available or you'd define a custom one.
 f_correctness = (
     Feedback(cortex_provider.correctness_with_cot_reasons, name="Correctness")
-   .on_output().on_ground_truth() # Requires ground truth
+  .on_output().on(TruApp.select_ground_truth) # Requires ground truth
 )
 
 # NEW: Create the custom toxicity feedback object
@@ -371,11 +220,23 @@ f_toxicity_metric = (
 
 
 # Enhanced test dataset with usernames
-usernames =
+usernames = ["alex_g", "beta_user", "casey_d", "dev_ops_dani", "emily_r"]
 
 test_data = pd.DataFrame({
-    'query':,
-    'expected_answer':,
+    'query': [
+        "What is machine learning?",
+        "Tell me about AI.",
+        "Explain cloud computing.",
+        "What is the capital of France?", # Out of domain
+        "What are the types of ML?"
+    ],
+    'expected_answer': [
+        "Machine learning is a subset of artificial intelligence where computers learn from data. Common types are supervised, unsupervised, and reinforcement learning.",
+        "AI involves systems performing tasks that usually require human intelligence, like natural language processing and computer vision.",
+        "Cloud computing delivers IT resources over the internet on a pay-as-you-go basis, from providers like AWS, Azure, and GCP.",
+        "I do not have information about the capital of France. My knowledge is limited to machine learning, AI, and cloud computing.", # Expected graceful failure
+        "The main types of machine learning are supervised learning, unsupervised learning, and reinforcement learning."
+    ],
     'username': [random.choice(usernames) for _ in range(5)]
 })
 
@@ -392,7 +253,7 @@ tru_app = TruApp(
     connector=connector,
     main_method=test_app.answer_query,
     # NEW: Pass all feedback functions, including your custom toxicity metric
-    feedbacks=
+    feedbacks=[f_answer_relevance, f_context_relevance, f_groundedness, f_correctness, f_toxicity_metric]
 )
 
 print(f"Application registered successfully: {app_name}")
@@ -400,10 +261,10 @@ print(f"Application registered successfully: {app_name}")
 # Single run configuration
 run_config = RunConfig(
     run_name=f"trulens_custom_metrics_run_{int(time.time())}", # Updated run name
-    description="Standard and custom TruLens metrics with OpenTelemetry custom attributes",
+    description="Standard and custom TruLens metrics", # Updated description
     label="trulens_custom_metrics_test",
     source_type="DATAFRAME",
-    dataset_name="Test dataset with custom TruLens metrics and OTel attributes",
+    dataset_name="Test dataset with custom TruLens metrics", # Updated dataset name
     dataset_spec={
         "RETRIEVAL.QUERY_TEXT": "query",
         "RECORD_ROOT.INPUT": "query",
@@ -435,7 +296,7 @@ while attempt < max_attempts:
     status = run.get_status()
     print(f"Attempt {attempt + 1}: Status = {status}")
     
-    if status in:
+    if status in ["COMPLETED", "METRICS_COMPUTED", "INVOCATION_COMPLETED"]:
         print("✅ INVOCATION COMPLETED - Ready to compute metrics!")
         break
     elif status == "INVOCATION_FAILED":
@@ -454,10 +315,10 @@ print("COMPUTING ALL DEFINED TRULENS METRICS (INCLUDING CUSTOM TOXICITY)")
 print("="*60)
 
 # Now include "Toxicity Score" in the list of metrics to compute
-metrics_to_compute =
+metrics_to_compute = ["Answer Relevance", "Context Relevance", "Groundedness", "Correctness", "Toxicity Score"]
 
-successful_metrics =
-failed_metrics =
+successful_metrics = []
+failed_metrics = []
 
 for metric in metrics_to_compute:
     print(f"\n--- Computing {metric.upper()} ---")
@@ -481,35 +342,9 @@ for metric in metrics_to_compute:
     print(f"Brief pause before next metric...")
     time.sleep(30)
 
-# Custom data analysis summary (OpenTelemetry attributes)
-print("\n" + "="*60)
-print("OPENTELEMETRY CUSTOM ATTRIBUTES SUMMARY (TRACE-LEVEL DATA)")
-print("="*60)
-
-print("✅ Custom attributes added using OpenTelemetry trace.get_current_span().set_attribute():")
-print("   - custom.username: User who made the request")
-print("   - custom.toxicity_detected: Toxicity analysis result (string 'yes'/'no')")
-print("   - custom.query_text: Original query text")
-print("   - custom.query_length: Length of query")
-print("   - custom.processing_start/end: Processing timestamps")
-print("   - custom.session_id: Unique session identifier")
-print("   - custom.is_special_user: Whether user is in special list")
-print("   - custom.user_type: User classification (special/regular)")
-print("   - custom.matched_topic: Which knowledge base topic matched")
-print("   - custom.contexts_found: Number of retrieved contexts")
-print("   - custom.llm_model: Model used for generation")
-print("   - custom.response_length: Length of generated response")
-print("   - custom.generation_status: Success/failure status")
-
-print("\n✅ Custom events added using current_span.add_event():")
-print("   - rag_processing_started: When processing begins")
-print("   - context_retrieval_complete: When context retrieval finishes")
-print("   - llm_generation_complete: When LLM generation finishes")
-print("   - rag_interaction_complete: When full interaction completes")
-
 # Final results
 print("\n" + "="*60)
-print("FINAL RESULTS - SNOWFLAKE AI OBSERVABILITY WITH CUSTOM TRULENS METRICS & OTel ATTRIBUTES")
+print("FINAL RESULTS - SNOWFLAKE AI OBSERVABILITY WITH CUSTOM TRULENS METRICS")
 print("="*60)
 print(f"✅ Successful metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
@@ -523,16 +358,11 @@ print("KEY ACCOMPLISHMENTS")
 print("="*60)
 print("✅ **Custom 'Toxicity Score' metric now computed by TruLens and visible on dashboard.**")
 print("✅ Standard Snowflake AI Observability metrics computed.")
-print("✅ OpenTelemetry custom attributes and events captured in traces for detailed debugging.")
-print("✅ Username and toxicity data captured in OpenTelemetry spans (trace-level).")
-print("✅ All traces and metrics stored in Snowflake for analysis.")
+print("✅ All metrics stored in Snowflake for analysis.")
 
 print("\n📊 View results in Snowsight:")
 print("   Navigate to: AI & ML -> Evaluations")
 print("   Look for app:", app_name)
 print("   **You should now see 'Toxicity Score' alongside other metrics on the main dashboard.**")
-print("   For custom trace data (username, detailed toxicity string, etc.):")
-print("   Click on individual records to see detailed traces and inspect custom.* attributes in span details.")
 
 print("\n🎉 SUCCESS: Custom TruLens metric for Toxicity implemented and integrated!")
-
