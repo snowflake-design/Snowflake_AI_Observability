@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 import time
-import random  # ADD THIS - for username simulation
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
@@ -10,15 +9,9 @@ from trulens.otel.semconv.trace import SpanAttributes
 from trulens.apps.app import TruApp
 from trulens.connectors.snowflake import SnowflakeConnector
 from trulens.core.run import Run, RunConfig
-
-# ADD THIS - Import for toxicity detection
-try:
-    from transformers import pipeline
-    toxicity_classifier = pipeline("text-classification", model="s-nlp/roberta_toxicity_classifier")
-    print("✅ Toxicity classifier loaded successfully")
-except Exception as e:
-    print(f"⚠️ Could not load toxicity classifier: {e}")
-    toxicity_classifier = None
+from trulens.core import Feedback, Select, Provider
+from trulens.providers.cortex import Cortex
+import numpy as np
 
 # Enable TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
@@ -32,6 +25,159 @@ except:
     session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
 
 print(f"Current context: {session.get_current_database()}.{session.get_current_schema()}")
+
+# ===============================
+# CUSTOM METRICS IMPLEMENTATION
+# ===============================
+
+class CustomMetricsProvider(Provider):
+    """Custom provider for domain-specific feedback functions"""
+    
+    def __init__(self, snowpark_session=None, model_engine="mistral-large2"):
+        super().__init__()
+        self.session = snowpark_session
+        self.model_engine = model_engine
+        
+    def response_completeness(self, query: str, response: str) -> float:
+        """
+        Custom metric to evaluate how complete the response is to the query.
+        Returns a score between 0.0 and 1.0.
+        """
+        # Simple heuristic: longer responses with specific keywords get higher scores
+        query_lower = query.lower()
+        response_lower = response.lower()
+        
+        # Base score based on response length
+        base_score = min(len(response) / 200, 1.0)  # Normalize to 200 chars max
+        
+        # Bonus for including query keywords
+        query_words = set(query_lower.split())
+        response_words = set(response_lower.split())
+        keyword_overlap = len(query_words.intersection(response_words))
+        keyword_bonus = min(keyword_overlap / len(query_words), 0.5) if query_words else 0
+        
+        # Bonus for structured elements (lists, examples)
+        structure_bonus = 0.1 if any(marker in response_lower for marker in ['-', '•', '1.', '2.', 'example']) else 0
+        
+        total_score = min(base_score + keyword_bonus + structure_bonus, 1.0)
+        return total_score
+    
+    def knowledge_accuracy(self, query: str, response: str, context: str) -> float:
+        """
+        Custom metric to evaluate accuracy based on knowledge base alignment.
+        Returns a score between 0.0 and 1.0.
+        """
+        context_lower = context.lower() if isinstance(context, str) else ""
+        response_lower = response.lower()
+        
+        if not context_lower:
+            return 0.5  # Neutral score if no context
+            
+        # Count factual overlaps between context and response
+        context_words = set(context_lower.split())
+        response_words = set(response_lower.split())
+        overlap = len(context_words.intersection(response_words))
+        
+        # Normalize by context length
+        overlap_score = min(overlap / len(context_words), 1.0) if context_words else 0
+        
+        # Penalty for hallucination indicators
+        hallucination_words = ['i think', 'maybe', 'probably', 'not sure', 'might be']
+        hallucination_penalty = sum(0.1 for phrase in hallucination_words if phrase in response_lower)
+        
+        final_score = max(0.0, overlap_score - hallucination_penalty)
+        return final_score
+    
+    def response_specificity(self, query: str, response: str) -> float:
+        """
+        Custom metric to evaluate how specific the response is.
+        Returns a score between 0.0 and 1.0.
+        """
+        response_lower = response.lower()
+        
+        # Specific indicators get higher scores
+        specific_indicators = ['specific', 'exactly', 'precisely', 'include', 'examples', 'such as']
+        generic_indicators = ['generally', 'usually', 'often', 'might', 'could be', 'typically']
+        
+        specific_count = sum(1 for indicator in specific_indicators if indicator in response_lower)
+        generic_count = sum(1 for indicator in generic_indicators if indicator in response_lower)
+        
+        # Score based on specificity vs generality
+        if specific_count + generic_count == 0:
+            return 0.5  # Neutral if no indicators
+            
+        specificity_ratio = specific_count / (specific_count + generic_count)
+        return specificity_ratio
+
+class CustomCortexProvider(Cortex):
+    """Extended Cortex provider with custom LLM-based metrics"""
+    
+    def business_value_assessment(self, query: str, response: str) -> float:
+        """
+        Custom LLM-based metric to assess business value of the response.
+        Uses Cortex LLM to generate score.
+        """
+        assessment_prompt = f"""
+        Evaluate the business value of this AI response on a scale from 0 to 10.
+        Consider factors like:
+        - Actionable insights provided
+        - Practical applicability
+        - Problem-solving effectiveness
+        - ROI potential for business decisions
+        
+        Query: {query}
+        Response: {response}
+        
+        Provide only a numeric score from 0-10, where 0 is no business value and 10 is extremely high business value.
+        """
+        
+        try:
+            score_text = complete(self.model_engine, assessment_prompt)
+            # Extract numeric score
+            import re
+            score_match = re.search(r'\b(\d+(?:\.\d+)?)\b', str(score_text))
+            if score_match:
+                score = float(score_match.group(1))
+                return min(score / 10.0, 1.0)  # Normalize to 0-1
+            else:
+                return 0.5  # Default if can't parse
+        except Exception as e:
+            print(f"Error in business value assessment: {e}")
+            return 0.5
+    
+    def response_clarity(self, response: str) -> float:
+        """
+        Custom LLM-based metric to assess response clarity.
+        """
+        clarity_prompt = f"""
+        Rate the clarity and readability of this response on a scale from 0 to 10.
+        Consider factors like:
+        - Clear language and structure
+        - Easy to understand explanations
+        - Logical flow of information
+        - Absence of jargon or overly complex terms
+        
+        Response: {response}
+        
+        Provide only a numeric score from 0-10, where 0 is very unclear and 10 is extremely clear.
+        """
+        
+        try:
+            score_text = complete(self.model_engine, clarity_prompt)
+            import re
+            score_match = re.search(r'\b(\d+(?:\.\d+)?)\b', str(score_text))
+            if score_match:
+                score = float(score_match.group(1))
+                return min(score / 10.0, 1.0)
+            else:
+                return 0.5
+        except Exception as e:
+            print(f"Error in clarity assessment: {e}")
+            return 0.5
+
+# ===============================
+# MAIN RAG APPLICATION
+# ===============================
 
 class RAGApplication:
     def __init__(self):
@@ -54,27 +200,6 @@ class RAGApplication:
                 "Applications include chatbots, recommendation systems, autonomous vehicles, and medical diagnosis."
             ]
         }
-
-    # ADD THIS - Custom toxicity detection method
-    def detect_toxicity(self, text: str) -> str:
-        """Detect if text is toxic using HuggingFace classifier."""
-        if toxicity_classifier is None:
-            return "unknown"
-        
-        try:
-            result = toxicity_classifier(text)
-            # The model returns labels like 'TOXIC' or 'NOT_TOXIC'
-            label = result[0]['label']
-            confidence = result[0]['score']
-            
-            # Return yes/no based on prediction
-            if label == 'TOXIC' and confidence > 0.5:
-                return "yes"
-            else:
-                return "no"
-        except Exception as e:
-            print(f"Error in toxicity detection: {e}")
-            return "unknown"
 
     @instrument(
         span_type=SpanAttributes.SpanType.RETRIEVAL,
@@ -119,115 +244,160 @@ Answer:"""
             return f"Error generating response: {str(e)}"
 
     @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
-    def answer_query(self, input_data, username: str = "unknown") -> str:  # MODIFIED TO HANDLE BOTH
+    def answer_query(self, query: str) -> str:
         """Main entry point for the RAG application."""
-        
-        # Handle different input types
-        if isinstance(input_data, dict):
-            # Dataset row input
-            query = input_data.get('query', '')
-            username = input_data.get('username', 'unknown')
-        elif hasattr(input_data, 'get'):
-            # Pandas Series input
-            query = input_data.get('query', str(input_data))
-            username = input_data.get('username', 'unknown')
-        else:
-            # String input (direct query)
-            query = str(input_data)
-            # username parameter will be used
-        
-        # ADD THIS - Log username and toxicity in trace context
-        print(f"🔍 Processing query from user: {username}")
-        
-        # Detect toxicity
-        toxicity_result = self.detect_toxicity(query)
-        print(f"🛡️ Toxicity check for '{query[:50]}...': {toxicity_result}")
-        
         context_str = self.retrieve_context(query)
-        response = self.generate_completion(query, context_str)
-        
-        # ADD THIS - Log completion with user info
-        print(f"✅ Response generated for user {username} (toxicity: {toxicity_result})")
-        
-        return response
+        return self.generate_completion(query, context_str)
 
 # Initialize the RAG application
 test_app = RAGApplication()
 
 # Test basic functionality
 print("Testing basic functionality...")
-test_response = test_app.answer_query("What is machine learning?", "test_user")  # ADD USERNAME
+test_response = test_app.answer_query("What is machine learning?")
 print(f"Test successful: {test_response[:100] if test_response else 'No response'}...")
+
+# ===============================
+# INITIALIZE CUSTOM METRICS
+# ===============================
+
+# Create custom providers
+custom_provider = CustomMetricsProvider(session, "mistral-large2")
+cortex_provider = CustomCortexProvider(session, model_engine="mistral-large2")
+
+# Built-in metrics
+f_answer_relevance = Feedback(
+    cortex_provider.relevance_with_cot_reasons,
+    name="Answer Relevance"
+).on(Select.RecordCalls.retrieve_context.args.query).on_output()
+
+f_context_relevance = Feedback(
+    cortex_provider.context_relevance_with_cot_reasons,
+    name="Context Relevance"
+).on(Select.RecordCalls.retrieve_context.args.query).on(Select.RecordCalls.retrieve_context.rets.collect()).aggregate(np.mean)
+
+f_groundedness = Feedback(
+    cortex_provider.groundedness_measure_with_cot_reasons,
+    name="Groundedness"
+).on(Select.RecordCalls.retrieve_context.rets.collect()).on_output()
+
+f_correctness = Feedback(
+    cortex_provider.correctness_with_cot_reasons,
+    name="Correctness"
+).on(Select.RecordCalls.retrieve_context.args.query).on_output()
+
+# Custom metrics
+f_response_completeness = Feedback(
+    custom_provider.response_completeness,
+    name="Response Completeness"
+).on(
+    query=Select.RecordCalls.retrieve_context.args.query,
+    response=Select.RecordOutput
+)
+
+f_knowledge_accuracy = Feedback(
+    custom_provider.knowledge_accuracy,
+    name="Knowledge Accuracy"
+).on(
+    query=Select.RecordCalls.retrieve_context.args.query,
+    response=Select.RecordOutput,
+    context=Select.RecordCalls.retrieve_context.rets.collect()
+)
+
+f_response_specificity = Feedback(
+    custom_provider.response_specificity,
+    name="Response Specificity"
+).on(
+    query=Select.RecordCalls.retrieve_context.args.query,
+    response=Select.RecordOutput
+)
+
+f_business_value = Feedback(
+    cortex_provider.business_value_assessment,
+    name="Business Value"
+).on(
+    query=Select.RecordCalls.retrieve_context.args.query,
+    response=Select.RecordOutput
+)
+
+f_response_clarity = Feedback(
+    cortex_provider.response_clarity,
+    name="Response Clarity"
+).on(response=Select.RecordOutput)
+
+print("Custom metrics initialized successfully!")
+
+# ===============================
+# REGISTER APP WITH ALL METRICS
+# ===============================
 
 # Create Snowflake connector
 connector = SnowflakeConnector(snowpark_session=session)
 
-# ADD THIS - Enhanced test dataset with usernames
-usernames = ["abc", "XYZ", "KKK"]  # Your requested usernames
-
-test_data = pd.DataFrame({
-    'query': [
-        "What is machine learning?",
-        "What are cloud computing benefits?", 
-        "What are AI applications?"
-    ],
-    'expected_answer': [
-        "Machine learning enables computers to learn from data without explicit programming.",
-        "Cloud computing provides scalability, cost-effectiveness, and accessibility.",
-        "AI applications include chatbots, recommendation systems, and autonomous vehicles."
-    ],
-    'username': [random.choice(usernames) for _ in range(3)]  # ADD USERNAME COLUMN
-})
-
-print(f"Created dataset with {len(test_data)} test queries")
-print("Dataset preview:")
-print(test_data[['query', 'username']].to_string())
-
-# Register the app - SINGLE REGISTRATION using original answer_query method
-app_name = f"rag_metrics_app_{int(time.time())}"
+# Register the app with both built-in and custom metrics
+app_name = f"rag_custom_metrics_app_{int(time.time())}"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
-    app_version="v1.0",
+    app_version="v1.0_custom",
     connector=connector,
-    main_method=test_app.answer_query  # Back to original method - now enhanced
+    main_method=test_app.answer_query
 )
 
 print(f"Application registered successfully: {app_name}")
 
-# SINGLE run configuration as per documentation
+# Create test dataset
+test_data = pd.DataFrame({
+    'query': [
+        "What is machine learning?",
+        "What are cloud computing benefits?", 
+        "What are AI applications?",
+        "How does supervised learning work?",
+        "What are the costs of cloud services?"
+    ],
+    'expected_answer': [
+        "Machine learning enables computers to learn from data without explicit programming.",
+        "Cloud computing provides scalability, cost-effectiveness, and accessibility.",
+        "AI applications include chatbots, recommendation systems, and autonomous vehicles.",
+        "Supervised learning uses labeled training data to make predictions.",
+        "Cloud service costs depend on usage, storage, and computing resources."
+    ]
+})
+
+print(f"Created dataset with {len(test_data)} test queries")
+
+# SINGLE run configuration
 run_config = RunConfig(
-    run_name=f"all_metrics_run_{int(time.time())}",
-    description="All metrics computation with username logging and toxicity detection",  # UPDATED DESCRIPTION
-    label="all_metrics_test",
+    run_name=f"custom_metrics_run_{int(time.time())}",
+    description="Complete evaluation with built-in and custom metrics",
+    label="custom_metrics_test",
     source_type="DATAFRAME",
-    dataset_name="All metrics test dataset with user tracking",  # UPDATED NAME
+    dataset_name="Custom metrics test dataset",
     dataset_spec={
         "RETRIEVAL.QUERY_TEXT": "query",
         "RECORD_ROOT.INPUT": "query",
         "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_answer",
-        # Note: username will be extracted from row data
     },
     llm_judge_name="mistral-large2"
 )
 
-print(f"Single run configuration created: {run_config.run_name}")
+print(f"Run configuration created: {run_config.run_name}")
 
-# Add SINGLE run to TruApp
+# Add run to TruApp
 run = tru_app.add_run(run_config=run_config)
-print("Single run added successfully")
+print("Run added successfully")
 
-# Start the run and wait for completion FIRST
+# Start the run and wait for completion
 print("Starting run execution...")
 run.start(input_df=test_data)
 print("Run execution completed")
 
-# CRITICAL: Wait for invocation to complete before ANY metrics computation
+# Wait for invocation to complete
 print("\n" + "="*60)
-print("WAITING FOR INVOCATION TO COMPLETE (AS PER DOCUMENTATION)")
+print("WAITING FOR INVOCATION TO COMPLETE")
 print("="*60)
 
-max_attempts = 60  # Increase attempts for stability
+max_attempts = 60
 attempt = 0
 
 while attempt < max_attempts:
@@ -235,47 +405,49 @@ while attempt < max_attempts:
     print(f"Attempt {attempt + 1}: Status = {status}")
     
     if status in ["INVOCATION_COMPLETED", "INVOCATION_PARTIALLY_COMPLETED"]:
-        print("✅ INVOCATION COMPLETED - Ready to compute ALL metrics!")
+        print("✅ INVOCATION COMPLETED - Ready to compute metrics!")
         break
     elif status == "INVOCATION_FAILED":
         print("❌ Invocation failed!")
         exit(1)
     else:
-        time.sleep(15)  # Longer wait between checks
+        time.sleep(15)
         attempt += 1
 
 if attempt >= max_attempts:
     print("⚠️ Timeout waiting for completion, but trying metrics anyway...")
 
-# NOW compute metrics one by one on the SAME run (as per documentation)
+# Compute ALL metrics (built-in + custom)
 print("\n" + "="*60)
-print("COMPUTING MULTIPLE METRICS ON SAME RUN")
+print("COMPUTING ALL METRICS (BUILT-IN + CUSTOM)")
 print("="*60)
 
-metrics_to_compute = [
+all_metrics = [
+    # Built-in metrics
     "answer_relevance",
     "context_relevance", 
     "groundedness",
-    "correctness"
-    # Note: toxicity is computed inline, not as a separate TruLens metric
+    "correctness",
+    # Custom metrics
+    "response_completeness",
+    "knowledge_accuracy",
+    "response_specificity",
+    "business_value",
+    "response_clarity"
 ]
 
 successful_metrics = []
 failed_metrics = []
 
-for metric in metrics_to_compute:
-    print(f"\n--- Computing {metric.upper()} on same run ---")
+for metric in all_metrics:
+    print(f"\n--- Computing {metric.upper()} ---")
     
     try:
-        # Call compute_metrics on the SAME run object
         run.compute_metrics(metrics=[metric])
         print(f"✅ {metric} computation initiated successfully")
         
-        # Give time for computation to process
-        print(f"Waiting for {metric} computation to complete...")
-        time.sleep(90)  # Longer wait for each metric
+        time.sleep(45)  # Wait for computation
         
-        # Check status after metric computation
         current_status = run.get_status()
         print(f"Status after {metric}: {current_status}")
         
@@ -285,43 +457,40 @@ for metric in metrics_to_compute:
         print(f"❌ Error computing {metric}: {e}")
         failed_metrics.append(metric)
     
-    # Brief pause between metrics
-    print(f"Brief pause before next metric...")
-    time.sleep(30)
-
-# ADD THIS - Custom toxicity analysis on test data
-print("\n" + "="*60)
-print("CUSTOM TOXICITY ANALYSIS")
-print("="*60)
-
-if toxicity_classifier:
-    for idx, row in test_data.iterrows():
-        toxicity = test_app.detect_toxicity(row['query'])
-        print(f"Query: '{row['query'][:50]}...' | User: {row['username']} | Toxic: {toxicity}")
-else:
-    print("⚠️ Toxicity classifier not available")
+    time.sleep(15)  # Brief pause between metrics
 
 # Final results
 print("\n" + "="*60)
-print("FINAL RESULTS - ENHANCED WITH USER TRACKING & TOXICITY")
+print("FINAL RESULTS - CUSTOM METRICS IMPLEMENTATION")
 print("="*60)
 print(f"✅ Successful metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
-print(f"Success rate: {len(successful_metrics)}/{len(metrics_to_compute)}")
+print(f"Success rate: {len(successful_metrics)}/{len(all_metrics)}")
 
 # Final status check
 final_status = run.get_status()
 print(f"\nFinal run status: {final_status}")
 
-print("\nEnhancements added:")
-print("✅ Username logging (abc, XYZ, KKK)")
-print("✅ Toxicity detection using HuggingFace")
-print("✅ Custom toxicity classifier integration")
-print("✅ User tracking in traces")
-print("✅ SINGLE TruApp registration (no duplicates)")
-print("✅ All original functionality preserved")
+print("\nCustom Metrics Added:")
+print("✅ Response Completeness - Evaluates response thoroughness")
+print("✅ Knowledge Accuracy - Measures alignment with knowledge base")
+print("✅ Response Specificity - Assesses how specific vs generic the response is")
+print("✅ Business Value - LLM-based evaluation of business applicability")
+print("✅ Response Clarity - LLM-based assessment of clarity and readability")
 
-print("\n📊 Check Snowsight AI & ML -> Evaluations")
-print("🔍 Should see ONE application with user context and toxicity info")
-print("👥 User information logged in application traces")
-print("🛡️ Toxicity detection results in console output")
+print(f"\n📊 Check Snowsight AI & ML -> Evaluations -> {app_name}")
+print("🔍 You should see one run with 9 total metrics (4 built-in + 5 custom)")
+print("🎯 Custom metrics will appear in the dashboard alongside built-in metrics!")
+
+# Example of how to access custom metric results programmatically
+print("\n" + "="*40)
+print("ACCESSING CUSTOM METRICS PROGRAMMATICALLY")
+print("="*40)
+
+try:
+    # This would show how to retrieve and analyze custom metrics
+    print("Custom metrics are stored in Snowflake AI_OBSERVABILITY_EVENTS table")
+    print("You can query them using SQL or through the TruLens connector")
+    print("Example queries available in Snowsight under AI & ML -> Evaluations")
+except Exception as e:
+    print(f"Note: {e}")
