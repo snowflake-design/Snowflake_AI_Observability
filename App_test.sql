@@ -1,6 +1,6 @@
 -- ========================================
 -- SIMPLE QUERIES FOR metric_rag APPLICATION
--- No filtering - just raw data for your app
+-- Using direct attribute access only (no CONTAINS)
 -- ========================================
 
 -- ===========================================
@@ -10,26 +10,34 @@
 -- 1. ALL RUNS FOR metric_rag APPLICATION (Raw Data)
 SELECT * 
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE CONTAINS(RECORD_ATTRIBUTES::string, 'metric_rag')
-   OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+   OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
 ORDER BY timestamp DESC;
 
--- 2. MOST RECENT RUN (Raw Data) - Find the latest run properly
+-- 2. MOST RECENT RUN FOR metric_rag APPLICATION (Raw Data)
 SELECT * 
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
 WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] = (
     SELECT RECORD_ATTRIBUTES['ai.observability.run.name']
     FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
     WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] IS NOT NULL
+      AND (
+        RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+        OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+      )
     ORDER BY timestamp DESC
     LIMIT 1
 )
 ORDER BY timestamp DESC;
 
--- 3. CURRENT DAY RUNS (Raw Data)
+-- 3. CURRENT DAY RUNS FOR metric_rag APPLICATION (Raw Data)
 SELECT * 
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
 WHERE DATE(timestamp) = CURRENT_DATE()
+  AND (
+    RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+    OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+  )
 ORDER BY timestamp DESC;
 
 -- ===========================================
@@ -51,6 +59,7 @@ SELECT
     RECORD['kind'] as span_kind,
     
     -- Custom Attributes (Separated Columns)
+    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
     RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
     RECORD_ATTRIBUTES['custom.username'] as username,
     RECORD_ATTRIBUTES['custom.query.toxicity.score'] as query_toxicity_score,
@@ -72,11 +81,11 @@ SELECT
     RESOURCE_ATTRIBUTES
     
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE CONTAINS(RECORD_ATTRIBUTES::string, 'metric_rag')
-   OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+   OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
 ORDER BY timestamp DESC;
 
--- 5. MOST RECENT RUN (Separated Columns) - Find the latest run properly
+-- 5. MOST RECENT RUN FOR metric_rag APPLICATION (Separated Columns)
 SELECT 
     timestamp,
     start_timestamp,
@@ -91,6 +100,7 @@ SELECT
     RECORD['kind'] as span_kind,
     
     -- Custom Attributes (Separated Columns)
+    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
     RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
     RECORD_ATTRIBUTES['custom.username'] as username,
     RECORD_ATTRIBUTES['custom.query.toxicity.score'] as query_toxicity_score,
@@ -116,12 +126,16 @@ WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] = (
     SELECT RECORD_ATTRIBUTES['ai.observability.run.name']
     FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
     WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] IS NOT NULL
+      AND (
+        RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+        OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+      )
     ORDER BY timestamp DESC
     LIMIT 1
 )
 ORDER BY timestamp DESC;
 
--- 6. CURRENT DAY RUNS (Separated Columns)
+-- 6. CURRENT DAY RUNS FOR metric_rag APPLICATION (Separated Columns)
 SELECT 
     timestamp,
     start_timestamp,
@@ -136,6 +150,7 @@ SELECT
     RECORD['kind'] as span_kind,
     
     -- Custom Attributes (Separated Columns)
+    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
     RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
     RECORD_ATTRIBUTES['custom.username'] as username,
     RECORD_ATTRIBUTES['custom.query.toxicity.score'] as query_toxicity_score,
@@ -158,19 +173,53 @@ SELECT
     
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
 WHERE DATE(timestamp) = CURRENT_DATE()
+  AND (
+    RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+    OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+  )
 ORDER BY timestamp DESC;
 
 -- ===========================================
--- BONUS: See what runs are available
+-- DISCOVERY QUERIES (To understand what data exists)
 -- ===========================================
 
--- 7. DISCOVER AVAILABLE RUNS (to see what run names exist)
+-- 7. DISCOVER ALL APPLICATIONS (to see what app names exist)
 SELECT 
+    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
+    COUNT(*) as trace_count,
+    MIN(timestamp) as first_trace,
+    MAX(timestamp) as last_trace
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] IS NOT NULL
+GROUP BY RECORD_ATTRIBUTES['ai.observability.app.name']
+ORDER BY last_trace DESC;
+
+-- 8. DISCOVER RUNS FOR metric_rag APPLICATION (to see what runs exist for your app)
+SELECT 
+    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
     RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
     COUNT(*) as trace_count,
     MIN(timestamp) as first_trace,
     MAX(timestamp) as last_trace
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] IS NOT NULL
-GROUP BY RECORD_ATTRIBUTES['ai.observability.run.name']
+WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+GROUP BY RECORD_ATTRIBUTES['ai.observability.app.name'], RECORD_ATTRIBUTES['ai.observability.run.name']
 ORDER BY last_trace DESC;
+
+-- 9. SIMPLE DEBUG - See recent events to understand structure
+SELECT 
+    timestamp,
+    record_type,
+    RECORD_ATTRIBUTES,
+    RESOURCE_ATTRIBUTES
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+ORDER BY timestamp DESC
+LIMIT 10;
+
+-- 10. ALTERNATIVE - If app name is not stored properly, look for custom attributes
+SELECT *
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom.username'] IS NOT NULL
+   OR RECORD_ATTRIBUTES['custom.query.toxicity.score'] IS NOT NULL
+   OR RECORD_ATTRIBUTES['custom.hallucination.score'] IS NOT NULL
+ORDER BY timestamp DESC;
