@@ -1,50 +1,49 @@
 -- ========================================
--- SIMPLE QUERIES FOR metric_rag APPLICATION
--- Using direct attribute access only (no CONTAINS)
+-- CORRECTED QUERIES BASED ON ACTUAL DATA STRUCTURE
+-- Using proper attribute paths from RECORD_ATTRIBUTES
 -- ========================================
 
 -- ===========================================
 -- RAW DATA QUERIES (SELECT * - Complete Data)
 -- ===========================================
 
--- 1. ALL RUNS FOR metric_rag APPLICATION (Raw Data)
+-- 1. ALL RUNS FOR YOUR APPLICATION "METRICS_RAG" (Raw Data)
 SELECT * 
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-   OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
 ORDER BY timestamp DESC;
 
--- 2. MOST RECENT RUN FOR metric_rag APPLICATION (Raw Data)
+-- 2. MOST RECENT RUN FOR YOUR APPLICATION (Raw Data)
 SELECT * 
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] = (
-    SELECT RECORD_ATTRIBUTES['ai.observability.run.name']
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.run.id'] = (
+    SELECT RECORD_ATTRIBUTES['snow.ai.observability.run.id']
     FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-    WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] IS NOT NULL
-      AND (
-        RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-        OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-      )
+    WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
+      AND RECORD_ATTRIBUTES['snow.ai.observability.run.id'] IS NOT NULL
     ORDER BY timestamp DESC
     LIMIT 1
 )
 ORDER BY timestamp DESC;
 
--- 3. CURRENT DAY RUNS FOR metric_rag APPLICATION (Raw Data)
+-- 3. SPECIFIC RUN "test_run_v26" (Raw Data)
+SELECT * 
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.run.name'] = 'test_run_v26'
+ORDER BY timestamp DESC;
+
+-- 4. CURRENT DAY RUNS FOR YOUR APPLICATION (Raw Data)
 SELECT * 
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
 WHERE DATE(timestamp) = CURRENT_DATE()
-  AND (
-    RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-    OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-  )
+  AND RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
 ORDER BY timestamp DESC;
 
 -- ===========================================
 -- SEPARATED COLUMNS QUERIES (Extracted Attributes)
 -- ===========================================
 
--- 4. ALL RUNS FOR metric_rag APPLICATION (Separated Columns)
+-- 5. ALL RUNS FOR YOUR APPLICATION (Separated Columns)
 SELECT 
     timestamp,
     start_timestamp,
@@ -58,34 +57,49 @@ SELECT
     RECORD['name'] as span_name,
     RECORD['kind'] as span_kind,
     
-    -- Custom Attributes (Separated Columns)
-    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
-    RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
-    RECORD_ATTRIBUTES['custom.username'] as username,
-    RECORD_ATTRIBUTES['custom.query.toxicity.score'] as query_toxicity_score,
-    RECORD_ATTRIBUTES['custom.query.is.toxic'] as query_is_toxic,
-    RECORD_ATTRIBUTES['custom.response.toxicity.score'] as response_toxicity_score,
-    RECORD_ATTRIBUTES['custom.response.is.toxic'] as response_is_toxic,
-    RECORD_ATTRIBUTES['custom.hallucination.score'] as hallucination_score,
-    RECORD_ATTRIBUTES['custom.has.hallucination'] as has_hallucination,
-    RECORD_ATTRIBUTES['custom.response.length'] as response_length,
+    -- AI Observability Attributes (From RECORD_ATTRIBUTES)
+    RECORD_ATTRIBUTES['snow.ai.observability.object.name'] as app_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.id'] as run_id,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.name'] as run_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.object.type'] as object_type,
+    RECORD_ATTRIBUTES['snow.ai.observability.object.version.name'] as version_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.database.name'] as database_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.schema.name'] as schema_name,
+    RECORD_ATTRIBUTES['ai.observability.span_type'] as span_type,
     
-    -- System Information
-    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name,
-    RESOURCE_ATTRIBUTES['snow.database.name'] as database_name,
-    RESOURCE_ATTRIBUTES['snow.schema.name'] as schema_name,
-    RESOURCE_ATTRIBUTES['db.user'] as db_user,
+    -- Function Call Information
+    RECORD_ATTRIBUTES['ai.observability.call.function'] as function_name,
+    RECORD_ATTRIBUTES['ai.observability.call.kwargs.query'] as input_query,
+    RECORD_ATTRIBUTES['ai.observability.call.return'] as function_output,
+    
+    -- Record Root Information (for main application flow)
+    RECORD_ATTRIBUTES['ai.observability.record_root.input'] as record_input,
+    RECORD_ATTRIBUTES['ai.observability.record_root.output'] as record_output,
+    RECORD_ATTRIBUTES['ai.observability.record_root.ground_truth_output'] as ground_truth,
+    
+    -- Custom Safety Attributes
+    RECORD_ATTRIBUTES['custom.username'] as username,
+    RECORD_ATTRIBUTES['custom.query_toxicity_score'] as query_toxicity_score,
+    RECORD_ATTRIBUTES['custom.response_toxicity_score'] as response_toxicity_score,
+    RECORD_ATTRIBUTES['custom.hallucination_score'] as hallucination_score,
+    RECORD_ATTRIBUTES['custom.is_high_quality_response'] as is_high_quality_response,
+    RECORD_ATTRIBUTES['custom.response_length'] as response_length,
+    RECORD_ATTRIBUTES['custom.context_count'] as context_count,
+    
+    -- Identifiers
+    RECORD_ATTRIBUTES['ai.observability.app_id'] as app_id,
+    RECORD_ATTRIBUTES['ai.observability.input_id'] as input_id,
+    RECORD_ATTRIBUTES['ai.observability.record_id'] as record_id,
     
     -- Raw JSON for reference
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
     
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-   OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
 ORDER BY timestamp DESC;
 
--- 5. MOST RECENT RUN FOR metric_rag APPLICATION (Separated Columns)
+-- 6. MOST RECENT RUN FOR YOUR APPLICATION (Separated Columns)
 SELECT 
     timestamp,
     start_timestamp,
@@ -95,131 +109,122 @@ SELECT
     TRACE['trace_id'] as trace_id,
     TRACE['span_id'] as span_id,
     
-    -- Record Information
-    RECORD['name'] as span_name,
-    RECORD['kind'] as span_kind,
+    -- AI Observability Attributes
+    RECORD_ATTRIBUTES['snow.ai.observability.object.name'] as app_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.id'] as run_id,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.name'] as run_name,
+    RECORD_ATTRIBUTES['ai.observability.span_type'] as span_type,
     
-    -- Custom Attributes (Separated Columns)
-    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
-    RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
+    -- Function Information
+    RECORD_ATTRIBUTES['ai.observability.call.function'] as function_name,
+    RECORD_ATTRIBUTES['ai.observability.call.kwargs.query'] as input_query,
+    
+    -- Custom Safety Attributes
     RECORD_ATTRIBUTES['custom.username'] as username,
-    RECORD_ATTRIBUTES['custom.query.toxicity.score'] as query_toxicity_score,
-    RECORD_ATTRIBUTES['custom.query.is.toxic'] as query_is_toxic,
-    RECORD_ATTRIBUTES['custom.response.toxicity.score'] as response_toxicity_score,
-    RECORD_ATTRIBUTES['custom.response.is.toxic'] as response_is_toxic,
-    RECORD_ATTRIBUTES['custom.hallucination.score'] as hallucination_score,
-    RECORD_ATTRIBUTES['custom.has.hallucination'] as has_hallucination,
-    RECORD_ATTRIBUTES['custom.response.length'] as response_length,
+    RECORD_ATTRIBUTES['custom.query_toxicity_score'] as query_toxicity_score,
+    RECORD_ATTRIBUTES['custom.response_toxicity_score'] as response_toxicity_score,
+    RECORD_ATTRIBUTES['custom.hallucination_score'] as hallucination_score,
+    RECORD_ATTRIBUTES['custom.is_high_quality_response'] as is_high_quality_response,
+    RECORD_ATTRIBUTES['custom.response_length'] as response_length,
+    RECORD_ATTRIBUTES['custom.context_count'] as context_count,
     
-    -- System Information
-    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name,
-    RESOURCE_ATTRIBUTES['snow.database.name'] as database_name,
-    RESOURCE_ATTRIBUTES['snow.schema.name'] as schema_name,
+    -- System Information (from RESOURCE_ATTRIBUTES if needed)
     RESOURCE_ATTRIBUTES['db.user'] as db_user,
+    RESOURCE_ATTRIBUTES['snow.warehouse.name'] as warehouse_name,
     
     -- Raw JSON for reference
     RECORD_ATTRIBUTES,
     RESOURCE_ATTRIBUTES
     
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] = (
-    SELECT RECORD_ATTRIBUTES['ai.observability.run.name']
-    FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-    WHERE RECORD_ATTRIBUTES['ai.observability.run.name'] IS NOT NULL
-      AND (
-        RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-        OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-      )
-    ORDER BY timestamp DESC
-    LIMIT 1
-)
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.run.name'] = 'test_run_v26'
 ORDER BY timestamp DESC;
 
--- 6. CURRENT DAY RUNS FOR metric_rag APPLICATION (Separated Columns)
+-- 7. SAFETY METRICS ANALYSIS
 SELECT 
     timestamp,
-    start_timestamp,
-    record_type,
-    
-    -- Trace Information
-    TRACE['trace_id'] as trace_id,
-    TRACE['span_id'] as span_id,
-    
-    -- Record Information
-    RECORD['name'] as span_name,
-    RECORD['kind'] as span_kind,
-    
-    -- Custom Attributes (Separated Columns)
-    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
-    RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
     RECORD_ATTRIBUTES['custom.username'] as username,
-    RECORD_ATTRIBUTES['custom.query.toxicity.score'] as query_toxicity_score,
-    RECORD_ATTRIBUTES['custom.query.is.toxic'] as query_is_toxic,
-    RECORD_ATTRIBUTES['custom.response.toxicity.score'] as response_toxicity_score,
-    RECORD_ATTRIBUTES['custom.response.is.toxic'] as response_is_toxic,
-    RECORD_ATTRIBUTES['custom.hallucination.score'] as hallucination_score,
-    RECORD_ATTRIBUTES['custom.has.hallucination'] as has_hallucination,
-    RECORD_ATTRIBUTES['custom.response.length'] as response_length,
+    RECORD_ATTRIBUTES['ai.observability.call.kwargs.query'] as query,
+    RECORD_ATTRIBUTES['custom.query_toxicity_score']::FLOAT as query_toxicity,
+    RECORD_ATTRIBUTES['custom.response_toxicity_score']::FLOAT as response_toxicity,
+    RECORD_ATTRIBUTES['custom.hallucination_score']::FLOAT as hallucination_score,
+    RECORD_ATTRIBUTES['custom.is_high_quality_response']::BOOLEAN as is_high_quality,
+    RECORD_ATTRIBUTES['custom.response_length']::INT as response_length,
+    RECORD_ATTRIBUTES['custom.context_count']::INT as context_count,
     
-    -- System Information
-    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name,
-    RESOURCE_ATTRIBUTES['snow.database.name'] as database_name,
-    RESOURCE_ATTRIBUTES['snow.schema.name'] as schema_name,
-    RESOURCE_ATTRIBUTES['db.user'] as db_user,
-    
-    -- Raw JSON for reference
-    RECORD_ATTRIBUTES,
-    RESOURCE_ATTRIBUTES
+    -- Calculate safety flags
+    CASE 
+        WHEN RECORD_ATTRIBUTES['custom.query_toxicity_score']::FLOAT > 0.5 THEN 'TOXIC_QUERY'
+        WHEN RECORD_ATTRIBUTES['custom.response_toxicity_score']::FLOAT > 0.5 THEN 'TOXIC_RESPONSE'
+        WHEN RECORD_ATTRIBUTES['custom.hallucination_score']::FLOAT > 0.8 THEN 'HIGH_HALLUCINATION'
+        ELSE 'SAFE'
+    END as safety_status
     
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE DATE(timestamp) = CURRENT_DATE()
-  AND (
-    RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-    OR RESOURCE_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-  )
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
+  AND RECORD_ATTRIBUTES['custom.username'] IS NOT NULL
 ORDER BY timestamp DESC;
 
 -- ===========================================
--- DISCOVERY QUERIES (To understand what data exists)
+-- DISCOVERY QUERIES
 -- ===========================================
 
--- 7. DISCOVER ALL APPLICATIONS (to see what app names exist)
+-- 8. DISCOVER ALL APPLICATIONS (to see what app names exist)
 SELECT 
-    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.object.name'] as app_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.object.type'] as object_type,
     COUNT(*) as trace_count,
     MIN(timestamp) as first_trace,
     MAX(timestamp) as last_trace
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] IS NOT NULL
-GROUP BY RECORD_ATTRIBUTES['ai.observability.app.name']
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] IS NOT NULL
+GROUP BY 
+    RECORD_ATTRIBUTES['snow.ai.observability.object.name'],
+    RECORD_ATTRIBUTES['snow.ai.observability.object.type']
 ORDER BY last_trace DESC;
 
--- 8. DISCOVER RUNS FOR metric_rag APPLICATION (to see what runs exist for your app)
+-- 9. DISCOVER RUNS FOR YOUR APPLICATION (to see what runs exist)
 SELECT 
-    RECORD_ATTRIBUTES['ai.observability.app.name'] as app_name,
-    RECORD_ATTRIBUTES['ai.observability.run.name'] as run_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.object.name'] as app_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.id'] as run_id,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.name'] as run_name,
+    RECORD_ATTRIBUTES['snow.ai.observability.object.version.name'] as version,
     COUNT(*) as trace_count,
     MIN(timestamp) as first_trace,
     MAX(timestamp) as last_trace
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['ai.observability.app.name'] = 'metric_rag'
-GROUP BY RECORD_ATTRIBUTES['ai.observability.app.name'], RECORD_ATTRIBUTES['ai.observability.run.name']
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
+GROUP BY 
+    RECORD_ATTRIBUTES['snow.ai.observability.object.name'], 
+    RECORD_ATTRIBUTES['snow.ai.observability.run.id'],
+    RECORD_ATTRIBUTES['snow.ai.observability.run.name'],
+    RECORD_ATTRIBUTES['snow.ai.observability.object.version.name']
 ORDER BY last_trace DESC;
 
--- 9. SIMPLE DEBUG - See recent events to understand structure
+-- 10. SPAN TYPE ANALYSIS
 SELECT 
-    timestamp,
-    record_type,
-    RECORD_ATTRIBUTES,
-    RESOURCE_ATTRIBUTES
+    RECORD_ATTRIBUTES['ai.observability.span_type'] as span_type,
+    RECORD_ATTRIBUTES['snow.ai.observability.run.name'] as run_name,
+    COUNT(*) as span_count,
+    AVG(RECORD_ATTRIBUTES['custom.response_length']::INT) as avg_response_length,
+    AVG(RECORD_ATTRIBUTES['custom.hallucination_score']::FLOAT) as avg_hallucination_score
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-ORDER BY timestamp DESC
-LIMIT 10;
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
+  AND RECORD_ATTRIBUTES['ai.observability.span_type'] IS NOT NULL
+GROUP BY 
+    RECORD_ATTRIBUTES['ai.observability.span_type'],
+    RECORD_ATTRIBUTES['snow.ai.observability.run.name']
+ORDER BY span_count DESC;
 
--- 10. ALTERNATIVE - If app name is not stored properly, look for custom attributes
-SELECT *
+-- 11. USER ACTIVITY ANALYSIS
+SELECT 
+    RECORD_ATTRIBUTES['custom.username'] as username,
+    COUNT(*) as query_count,
+    AVG(RECORD_ATTRIBUTES['custom.response_length']::INT) as avg_response_length,
+    AVG(RECORD_ATTRIBUTES['custom.hallucination_score']::FLOAT) as avg_hallucination_score,
+    MAX(timestamp) as last_activity
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE RECORD_ATTRIBUTES['custom.username'] IS NOT NULL
-   OR RECORD_ATTRIBUTES['custom.query.toxicity.score'] IS NOT NULL
-   OR RECORD_ATTRIBUTES['custom.hallucination.score'] IS NOT NULL
-ORDER BY timestamp DESC;
+WHERE RECORD_ATTRIBUTES['snow.ai.observability.object.name'] = 'METRICS_RAG'
+  AND RECORD_ATTRIBUTES['custom.username'] IS NOT NULL
+GROUP BY RECORD_ATTRIBUTES['custom.username']
+ORDER BY query_count DESC;
