@@ -1,145 +1,298 @@
 -- ========================================
--- Snowflake AI Observability SQL Queries
--- App: metric_rag | Run: test_run_v27
+-- COMPREHENSIVE AI OBSERVABILITY TRACES ANALYSIS
+-- App: metric_rag | Run: test_run_v27 | User: data_scientist_user
 -- ========================================
 
--- Query 1: Get specific run data with all custom attributes
+-- ===========================================
+-- 1. CURRENT RUN TRACES (test_run_v27)
+-- ===========================================
+
+-- Get all traces for your specific run
 SELECT 
     timestamp,
+    start_timestamp,
     record_type,
-    record_attributes:"ai_observability_run_name"::string as run_name,
-    record_attributes:"custom_username"::string as username,
-    record_attributes:"custom_query_toxicity_score"::float as query_toxicity_score,
-    record_attributes:"custom_query_is_toxic"::boolean as query_is_toxic,
-    record_attributes:"custom_response_toxicity_score"::float as response_toxicity_score,
-    record_attributes:"custom_response_is_toxic"::boolean as response_is_toxic,
-    record_attributes:"custom_hallucination_score"::float as hallucination_score,
-    record_attributes:"custom_has_hallucination"::boolean as has_hallucination,
-    record_attributes:"custom_response_length"::int as response_length,
-    trace:"span_id"::string as span_id,
-    trace:"trace_id"::string as trace_id
+    TRACE['trace_id'] as trace_id,
+    TRACE['span_id'] as span_id,
+    RECORD['name'] as span_name,
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    RECORD_ATTRIBUTES['custom_query_toxicity_score'] as query_toxicity,
+    RECORD_ATTRIBUTES['custom_response_toxicity_score'] as response_toxicity,
+    RECORD_ATTRIBUTES['custom_hallucination_score'] as hallucination,
+    RECORD_ATTRIBUTES['custom_response_length'] as response_length,
+    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name,
+    RECORD_ATTRIBUTES,
+    RESOURCE_ATTRIBUTES
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"ai_observability_run_name"::string = 'test_run_v27'
-  AND record_attributes:"custom_username" IS NOT NULL
+WHERE RECORD_ATTRIBUTES['ai_observability_run_name'] = 'test_run_v27'
 ORDER BY timestamp DESC;
 
--- ========================================
+-- ===========================================
+-- 2. CURRENT DAY TRACES (All your app activity today)
+-- ===========================================
 
--- Query 2: Summary statistics for your run
-SELECT 
-    record_attributes:"ai_observability_run_name"::string as run_name,
-    record_attributes:"custom_username"::string as username,
-    COUNT(*) as total_records,
-    AVG(record_attributes:"custom_query_toxicity_score"::float) as avg_query_toxicity,
-    AVG(record_attributes:"custom_response_toxicity_score"::float) as avg_response_toxicity,
-    AVG(record_attributes:"custom_hallucination_score"::float) as avg_hallucination_score,
-    AVG(record_attributes:"custom_response_length"::int) as avg_response_length,
-    SUM(CASE WHEN record_attributes:"custom_query_is_toxic"::boolean = true THEN 1 ELSE 0 END) as toxic_queries_count,
-    SUM(CASE WHEN record_attributes:"custom_response_is_toxic"::boolean = true THEN 1 ELSE 0 END) as toxic_responses_count,
-    SUM(CASE WHEN record_attributes:"custom_has_hallucination"::boolean = true THEN 1 ELSE 0 END) as hallucination_count
-FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"ai_observability_run_name"::string = 'test_run_v27'
-  AND record_attributes:"custom_username" IS NOT NULL
-GROUP BY record_attributes:"ai_observability_run_name"::string, record_attributes:"custom_username"::string;
-
--- ========================================
-
--- Query 3: Get evaluation metrics for your run
+-- Get all traces for your application today
 SELECT 
     timestamp,
-    record_attributes:"ai_observability_run_name"::string as run_name,
-    record_attributes:"ai_observability_eval_metric_name"::string as metric_name,
-    record_attributes:"ai_observability_eval_score"::float as metric_score,
-    record_attributes:"ai_observability_eval_explanation"::string as metric_explanation
-FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"ai_observability_run_name"::string = 'test_run_v27'
-  AND record_attributes:"ai_observability_eval_metric_name" IS NOT NULL
-ORDER BY timestamp DESC;
-
--- ========================================
-
--- Query 4: Safety Analysis - High Risk Queries/Responses
-SELECT 
-    timestamp,
-    record_attributes:"custom_username"::string as username,
-    record_attributes:"custom_query_toxicity_score"::float as query_toxicity,
-    record_attributes:"custom_response_toxicity_score"::float as response_toxicity,
-    record_attributes:"custom_hallucination_score"::float as hallucination_score,
-    CASE 
-        WHEN record_attributes:"custom_query_toxicity_score"::float > 0.5 THEN 'HIGH_TOXIC_QUERY'
-        WHEN record_attributes:"custom_response_toxicity_score"::float > 0.5 THEN 'HIGH_TOXIC_RESPONSE'  
-        WHEN record_attributes:"custom_hallucination_score"::float > 0.7 THEN 'HIGH_HALLUCINATION'
-        ELSE 'SAFE'
-    END as risk_level
-FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"ai_observability_run_name"::string = 'test_run_v27'
-  AND record_attributes:"custom_username" IS NOT NULL
-ORDER BY 
-    record_attributes:"custom_query_toxicity_score"::float DESC,
-    record_attributes:"custom_response_toxicity_score"::float DESC,
-    record_attributes:"custom_hallucination_score"::float DESC;
-
--- ========================================
-
--- Query 5: Time-series analysis of your run
-SELECT 
-    DATE_TRUNC('minute', timestamp) as minute_bucket,
-    COUNT(*) as requests_per_minute,
-    AVG(record_attributes:"custom_query_toxicity_score"::float) as avg_query_toxicity,
-    AVG(record_attributes:"custom_response_toxicity_score"::float) as avg_response_toxicity,
-    AVG(record_attributes:"custom_hallucination_score"::float) as avg_hallucination,
-    AVG(record_attributes:"custom_response_length"::int) as avg_response_length
-FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"ai_observability_run_name"::string = 'test_run_v27'
-  AND record_attributes:"custom_username" IS NOT NULL
-GROUP BY DATE_TRUNC('minute', timestamp)
-ORDER BY minute_bucket DESC;
-
--- ========================================
-
--- Query 6: Complete raw data export for analysis
-SELECT 
-    timestamp,
+    start_timestamp,
     record_type,
-    trace,
-    resource_attributes,
-    record_attributes,
-    record
+    TRACE['trace_id'] as trace_id,
+    TRACE['span_id'] as span_id,
+    RECORD['name'] as span_name,
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    RECORD_ATTRIBUTES['custom_query_toxicity_score'] as query_toxicity,
+    RECORD_ATTRIBUTES['custom_response_toxicity_score'] as response_toxicity,
+    RECORD_ATTRIBUTES['custom_hallucination_score'] as hallucination,
+    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"ai_observability_run_name"::string = 'test_run_v27'
+WHERE DATE(timestamp) = CURRENT_DATE()
+  AND (
+    RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+    OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+    OR CONTAINS(RECORD_ATTRIBUTES::string, 'data_scientist_user')
+  )
 ORDER BY timestamp DESC;
 
--- ========================================
+-- ===========================================
+-- 3. LIFETIME TRACES (All historical traces for your app)
+-- ===========================================
 
--- Query 7: Search for all runs by username
+-- Get all traces ever recorded for your application
 SELECT 
-    record_attributes:"ai_observability_run_name"::string as run_name,
-    record_attributes:"custom_username"::string as username,
+    timestamp,
+    start_timestamp,
+    record_type,
+    TRACE['trace_id'] as trace_id,
+    TRACE['span_id'] as span_id,
+    RECORD['name'] as span_name,
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    RECORD_ATTRIBUTES['custom_query_toxicity_score'] as query_toxicity,
+    RECORD_ATTRIBUTES['custom_response_toxicity_score'] as response_toxicity,
+    RECORD_ATTRIBUTES['custom_hallucination_score'] as hallucination,
+    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name,
+    DATE(timestamp) as event_date
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+   OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+   OR CONTAINS(RECORD_ATTRIBUTES::string, 'data_scientist_user')
+ORDER BY timestamp DESC;
+
+-- ===========================================
+-- 4. APPLICATION TRACES SUMMARY BY DAY
+-- ===========================================
+
+-- Daily summary of your application traces
+SELECT 
+    DATE(timestamp) as trace_date,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    COUNT(*) as total_traces,
+    COUNT(DISTINCT TRACE['trace_id']) as unique_traces,
+    COUNT(DISTINCT RECORD_ATTRIBUTES['ai_observability_run_name']) as unique_runs,
+    AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) as avg_query_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_response_toxicity_score']::float) as avg_response_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) as avg_hallucination,
+    MIN(timestamp) as first_trace,
+    MAX(timestamp) as last_trace
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+   OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+GROUP BY DATE(timestamp), RECORD_ATTRIBUTES['custom_username']
+ORDER BY trace_date DESC;
+
+-- ===========================================
+-- 5. TRACES BY RUN NAME (All runs for your app)
+-- ===========================================
+
+-- Summary by run name
+SELECT 
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    COUNT(*) as total_traces,
+    COUNT(DISTINCT TRACE['trace_id']) as unique_traces,
+    AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) as avg_query_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_response_toxicity_score']::float) as avg_response_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) as avg_hallucination,
     MIN(timestamp) as run_start,
     MAX(timestamp) as run_end,
-    COUNT(*) as total_requests,
-    AVG(record_attributes:"custom_hallucination_score"::float) as avg_hallucination
+    DATEDIFF('second', MIN(timestamp), MAX(timestamp)) as run_duration_seconds
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"custom_username"::string = 'data_scientist_user'
-GROUP BY 
-    record_attributes:"ai_observability_run_name"::string,
-    record_attributes:"custom_username"::string
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+   OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+GROUP BY RECORD_ATTRIBUTES['ai_observability_run_name'], RECORD_ATTRIBUTES['custom_username']
 ORDER BY run_start DESC;
 
--- ========================================
+-- ===========================================
+-- 6. RECENT TRACES (Last 24 hours)
+-- ===========================================
 
--- Query 8: App performance comparison (if you have multiple apps)
+-- Get traces from last 24 hours
 SELECT 
-    resource_attributes:"ai_observability_app_name"::string as app_name,
-    record_attributes:"ai_observability_run_name"::string as run_name,
-    COUNT(*) as total_requests,
-    AVG(record_attributes:"custom_query_toxicity_score"::float) as avg_query_toxicity,
-    AVG(record_attributes:"custom_response_toxicity_score"::float) as avg_response_toxicity,
-    AVG(record_attributes:"custom_hallucination_score"::float) as avg_hallucination_score,
-    AVG(record_attributes:"custom_response_length"::int) as avg_response_length
+    timestamp,
+    start_timestamp,
+    record_type,
+    TRACE['trace_id'] as trace_id,
+    TRACE['span_id'] as span_id,
+    RECORD['name'] as span_name,
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    RECORD_ATTRIBUTES['custom_query_toxicity_score'] as query_toxicity,
+    RECORD_ATTRIBUTES['custom_response_toxicity_score'] as response_toxicity,
+    RECORD_ATTRIBUTES['custom_hallucination_score'] as hallucination,
+    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name
 FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
-WHERE record_attributes:"custom_username" IS NOT NULL
-GROUP BY 
-    resource_attributes:"ai_observability_app_name"::string,
-    record_attributes:"ai_observability_run_name"::string
-ORDER BY avg_hallucination_score DESC;
+WHERE timestamp >= CURRENT_TIMESTAMP - INTERVAL '24 HOURS'
+  AND (
+    RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+    OR CONTAINS(RESOURCE_ATTRIBUTES::string, 'metric_rag')
+    OR CONTAINS(RECORD_ATTRIBUTES::string, 'data_scientist_user')
+  )
+ORDER BY timestamp DESC;
+
+-- ===========================================
+-- 7. TRACE PERFORMANCE ANALYSIS
+-- ===========================================
+
+-- Performance analysis of your traces
+SELECT 
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    record_type,
+    RECORD['name'] as span_name,
+    COUNT(*) as span_count,
+    AVG(DATEDIFF('millisecond', start_timestamp, timestamp)) as avg_duration_ms,
+    MIN(DATEDIFF('millisecond', start_timestamp, timestamp)) as min_duration_ms,
+    MAX(DATEDIFF('millisecond', start_timestamp, timestamp)) as max_duration_ms,
+    AVG(RECORD_ATTRIBUTES['custom_response_length']::int) as avg_response_length
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+  AND start_timestamp IS NOT NULL
+  AND timestamp IS NOT NULL
+GROUP BY RECORD_ATTRIBUTES['ai_observability_run_name'], record_type, RECORD['name']
+ORDER BY avg_duration_ms DESC;
+
+-- ===========================================
+-- 8. SAFETY METRICS ANALYSIS (Toxicity & Hallucination)
+-- ===========================================
+
+-- Safety analysis across all your traces
+SELECT 
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    DATE(timestamp) as trace_date,
+    COUNT(*) as total_requests,
+    
+    -- Toxicity Analysis
+    AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) as avg_query_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_response_toxicity_score']::float) as avg_response_toxicity,
+    SUM(CASE WHEN RECORD_ATTRIBUTES['custom_query_is_toxic']::boolean = true THEN 1 ELSE 0 END) as toxic_queries,
+    SUM(CASE WHEN RECORD_ATTRIBUTES['custom_response_is_toxic']::boolean = true THEN 1 ELSE 0 END) as toxic_responses,
+    
+    -- Hallucination Analysis  
+    AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) as avg_hallucination,
+    SUM(CASE WHEN RECORD_ATTRIBUTES['custom_has_hallucination']::boolean = true THEN 1 ELSE 0 END) as hallucinated_responses,
+    
+    -- Safety Score (0-100, higher is safer)
+    ROUND(100 - (
+        (AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) * 50) +
+        (AVG(RECORD_ATTRIBUTES['custom_response_toxicity_score']::float) * 50) +
+        (AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) * 30)
+    ), 2) as safety_score
+    
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+  AND RECORD_ATTRIBUTES['custom_query_toxicity_score'] IS NOT NULL
+GROUP BY RECORD_ATTRIBUTES['ai_observability_run_name'], DATE(timestamp)
+ORDER BY trace_date DESC, safety_score ASC;
+
+-- ===========================================
+-- 9. COMPLETE TRACE DETAILS (Deep Dive)
+-- ===========================================
+
+-- Complete trace information with all details
+SELECT 
+    timestamp,
+    start_timestamp,
+    record_type,
+    TRACE['trace_id'] as trace_id,
+    TRACE['span_id'] as span_id,
+    RECORD['name'] as span_name,
+    RECORD['kind'] as span_kind,
+    
+    -- Run Information
+    RECORD_ATTRIBUTES['ai_observability_run_name'] as run_name,
+    RECORD_ATTRIBUTES['custom_username'] as username,
+    
+    -- Safety Metrics
+    RECORD_ATTRIBUTES['custom_query_toxicity_score'] as query_toxicity,
+    RECORD_ATTRIBUTES['custom_query_is_toxic'] as query_is_toxic,
+    RECORD_ATTRIBUTES['custom_response_toxicity_score'] as response_toxicity,
+    RECORD_ATTRIBUTES['custom_response_is_toxic'] as response_is_toxic,
+    RECORD_ATTRIBUTES['custom_hallucination_score'] as hallucination,
+    RECORD_ATTRIBUTES['custom_has_hallucination'] as has_hallucination,
+    
+    -- Performance Metrics
+    RECORD_ATTRIBUTES['custom_response_length'] as response_length,
+    DATEDIFF('millisecond', start_timestamp, timestamp) as duration_ms,
+    
+    -- System Information
+    RESOURCE_ATTRIBUTES['snow.executable.name'] as executable_name,
+    RESOURCE_ATTRIBUTES['snow.database.name'] as database_name,
+    RESOURCE_ATTRIBUTES['snow.schema.name'] as schema_name,
+    RESOURCE_ATTRIBUTES['db.user'] as db_user,
+    
+    -- Raw Data
+    RECORD_ATTRIBUTES as all_record_attributes,
+    RESOURCE_ATTRIBUTES as all_resource_attributes
+    
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+   OR RECORD_ATTRIBUTES['ai_observability_run_name'] = 'test_run_v27'
+ORDER BY timestamp DESC;
+
+-- ===========================================
+-- 10. QUICK APP HEALTH CHECK
+-- ===========================================
+
+-- Quick health check for your application
+SELECT 
+    'Current Run (test_run_v27)' as scope,
+    COUNT(*) as total_traces,
+    COUNT(DISTINCT TRACE['trace_id']) as unique_traces,
+    AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) as avg_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) as avg_hallucination,
+    MAX(timestamp) as last_activity
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['ai_observability_run_name'] = 'test_run_v27'
+
+UNION ALL
+
+SELECT 
+    'Today' as scope,
+    COUNT(*) as total_traces,
+    COUNT(DISTINCT TRACE['trace_id']) as unique_traces,
+    AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) as avg_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) as avg_hallucination,
+    MAX(timestamp) as last_activity
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE DATE(timestamp) = CURRENT_DATE()
+  AND RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+
+UNION ALL
+
+SELECT 
+    'Lifetime' as scope,
+    COUNT(*) as total_traces,
+    COUNT(DISTINCT TRACE['trace_id']) as unique_traces,
+    AVG(RECORD_ATTRIBUTES['custom_query_toxicity_score']::float) as avg_toxicity,
+    AVG(RECORD_ATTRIBUTES['custom_hallucination_score']::float) as avg_hallucination,
+    MAX(timestamp) as last_activity
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE RECORD_ATTRIBUTES['custom_username'] = 'data_scientist_user'
+
+ORDER BY 
+    CASE scope 
+        WHEN 'Current Run (test_run_v27)' THEN 1
+        WHEN 'Today' THEN 2  
+        WHEN 'Lifetime' THEN 3
+    END;
