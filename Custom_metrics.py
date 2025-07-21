@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import time
-import torch
+import warnings
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.session import Session
 from snowflake.cortex import complete
@@ -12,15 +12,96 @@ from trulens.connectors.snowflake import SnowflakeConnector
 from trulens.core.run import Run, RunConfig
 from opentelemetry import trace
 
-# For toxicity detection
-from transformers import RobertaTokenizer, RobertaForSequenceClassification
-import torch.nn.functional as F
+# Suppress warnings
+warnings.filterwarnings("ignore")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# For hallucination detection
-from lettucedetect.models.inference import HallucinationDetector
+# Toxicity and Hallucination Detection Libraries
+try:
+    from transformers import RobertaTokenizer, RobertaForSequenceClassification
+    import torch
+    import torch.nn.functional as F
+    TOXICITY_AVAILABLE = True
+except ImportError:
+    TOXICITY_AVAILABLE = False
+    print("⚠️ Transformers not available, toxicity detection disabled")
+
+try:
+    from lettucedetect.models.inference import HallucinationDetector
+    HALLUCINATION_AVAILABLE = True
+except ImportError:
+    HALLUCINATION_AVAILABLE = False
+    print("⚠️ LettuceDetect not available, hallucination detection disabled")
 
 # Enable TruLens OpenTelemetry tracing
 os.environ["TRULENS_OTEL_TRACING"] = "1"
+
+# Initialize detection models globally
+toxicity_tokenizer = None
+toxicity_model = None
+hallucination_detector = None
+
+def initialize_models():
+    global toxicity_tokenizer, toxicity_model, hallucination_detector
+    
+    # Initialize toxicity detection
+    if TOXICITY_AVAILABLE:
+        try:
+            print("Loading toxicity detection model...")
+            toxicity_tokenizer = RobertaTokenizer.from_pretrained('s-nlp/roberta_toxicity_classifier')
+            toxicity_model = RobertaForSequenceClassification.from_pretrained('s-nlp/roberta_toxicity_classifier')
+            toxicity_model.eval()
+            print("✅ Toxicity detector loaded")
+        except Exception as e:
+            print(f"❌ Failed to load toxicity model: {e}")
+    
+    # Initialize hallucination detection
+    if HALLUCINATION_AVAILABLE:
+        try:
+            print("Loading hallucination detection model...")
+            hallucination_detector = HallucinationDetector(
+                method="transformer",
+                model_path="KRLabsOrg/lettucedect-base-modernbert-en-v1"
+            )
+            print("✅ Hallucination detector loaded")
+        except Exception as e:
+            print(f"❌ Failed to load hallucination model: {e}")
+
+def detect_toxicity(text):
+    """Detect toxicity in text"""
+    if not TOXICITY_AVAILABLE or toxicity_tokenizer is None or toxicity_model is None:
+        return 0.0, False
+    
+    try:
+        inputs = toxicity_tokenizer.encode(text, return_tensors="pt", truncation=True, max_length=512)
+        with torch.no_grad():
+            outputs = toxicity_model(inputs)
+            probabilities = F.softmax(outputs.logits, dim=-1)
+            score = probabilities[0][1].item()
+        return score, score > 0.5
+    except:
+        return 0.0, False
+
+def detect_hallucination(context_list, question, answer):
+    """Detect hallucination in answer"""
+    if not HALLUCINATION_AVAILABLE or hallucination_detector is None:
+        return 0.0, False
+    
+    try:
+        predictions = hallucination_detector.predict(
+            context=context_list,
+            question=question,
+            answer=answer,
+            output_format="spans"
+        )
+        if not predictions:
+            return 0.0, False
+        
+        # Average confidence of hallucinated spans
+        avg_confidence = sum(pred['confidence'] for pred in predictions) / len(predictions)
+        return avg_confidence, avg_confidence > 0.3
+    except:
+        return 0.0, False
 
 # Get Snowflake session
 try:
@@ -32,87 +113,12 @@ except:
 
 print(f"Current context: {session.get_current_database()}.{session.get_current_schema()}")
 
-class ToxicityDetector:
-    """Toxicity detection using s-nlp RoBERTa model"""
-    def __init__(self):
-        print("Loading toxicity detection model...")
-        self.tokenizer = RobertaTokenizer.from_pretrained('s-nlp/roberta_toxicity_classifier')
-        self.model = RobertaForSequenceClassification.from_pretrained('s-nlp/roberta_toxicity_classifier')
-        self.model.eval()
-        print("✅ Toxicity detector loaded successfully")
-    
-    def detect_toxicity(self, text: str) -> float:
-        """
-        Detect toxicity score for given text
-        Returns: float between 0 and 1 (1 = toxic, 0 = non-toxic)
-        """
-        try:
-            # Tokenize and get model predictions
-            inputs = self.tokenizer.encode(text, return_tensors="pt", truncate=True, max_length=512)
-            
-            with torch.no_grad():
-                outputs = self.model(inputs)
-                probabilities = F.softmax(outputs.logits, dim=-1)
-                # Index 1 is for toxic, index 0 is for neutral
-                toxicity_score = probabilities[0][1].item()
-            
-            return toxicity_score
-        except Exception as e:
-            print(f"Error in toxicity detection: {e}")
-            return 0.0
+# Initialize models
+initialize_models()
 
-class HallucinationDetectorWrapper:
-    """Hallucination detection using LettuceDetect"""
+class RAGApplication:
     def __init__(self):
-        print("Loading hallucination detection model...")
-        try:
-            self.detector = HallucinationDetector(
-                method="transformer",
-                model_path="KRLabsOrg/lettucedect-base-modernbert-en-v1"
-            )
-            print("✅ Hallucination detector loaded successfully")
-        except Exception as e:
-            print(f"⚠️ Warning: Could not load hallucination detector: {e}")
-            self.detector = None
-    
-    def detect_hallucination(self, context: list, question: str, answer: str) -> float:
-        """
-        Detect hallucination score for given answer
-        Returns: float between 0 and 1 (1 = high hallucination, 0 = no hallucination)
-        """
-        if self.detector is None:
-            return 0.0
-        
-        try:
-            # Get span-level predictions
-            predictions = self.detector.predict(
-                context=context,
-                question=question,
-                answer=answer,
-                output_format="spans"
-            )
-            
-            # Calculate overall hallucination score
-            if not predictions:
-                return 0.0
-            
-            # Average confidence of hallucinated spans
-            total_confidence = sum(pred['confidence'] for pred in predictions)
-            avg_confidence = total_confidence / len(predictions) if predictions else 0.0
-            
-            return avg_confidence
-        except Exception as e:
-            print(f"Error in hallucination detection: {e}")
-            return 0.0
-
-class EnhancedRAGApplication:
-    def __init__(self, username: str = "default_user"):
         self.model = "mistral-large2"
-        self.username = username
-        
-        # Initialize detectors
-        self.toxicity_detector = ToxicityDetector()
-        self.hallucination_detector = HallucinationDetectorWrapper()
         
         self.knowledge_base = {
             "machine learning": [
@@ -176,55 +182,38 @@ Answer:"""
 
     @instrument(span_type=SpanAttributes.SpanType.RECORD_ROOT)
     def answer_query(self, query: str) -> str:
-        """Main entry point for the RAG application with enhanced observability."""
+        """Main entry point for the RAG application."""
         # Get current span for custom attributes
         current_span = trace.get_current_span()
         
         # Log username
-        current_span.set_attribute("custom.username", self.username)
+        current_span.set_attribute("custom.username", "data_scientist_user")
         
-        # Detect toxicity in the query
-        query_toxicity_score = self.toxicity_detector.detect_toxicity(query)
+        # Detect toxicity in query
+        query_toxicity_score, query_is_toxic = detect_toxicity(query)
         current_span.set_attribute("custom.query_toxicity_score", query_toxicity_score)
+        current_span.set_attribute("custom.query_is_toxic", query_is_toxic)
         
-        # Retrieve context and generate response
+        # Original RAG logic
         context_str = self.retrieve_context(query)
         response = self.generate_completion(query, context_str)
         
-        # Detect toxicity in the response
-        response_toxicity_score = self.toxicity_detector.detect_toxicity(response)
+        # Detect toxicity in response
+        response_toxicity_score, response_is_toxic = detect_toxicity(response)
         current_span.set_attribute("custom.response_toxicity_score", response_toxicity_score)
+        current_span.set_attribute("custom.response_is_toxic", response_is_toxic)
         
-        # Detect hallucination in the response
-        hallucination_score = self.hallucination_detector.detect_hallucination(
-            context=context_str,
-            question=query,
-            answer=response
-        )
+        # Detect hallucination in response
+        hallucination_score, has_hallucination = detect_hallucination(context_str, query, response)
         current_span.set_attribute("custom.hallucination_score", hallucination_score)
-        
-        # Add response length and other metrics
-        current_span.set_attribute("custom.response_length", len(response))
-        current_span.set_attribute("custom.context_count", len(context_str))
-        
-        # Log quality assessment
-        is_high_quality = (
-            query_toxicity_score < 0.1 and 
-            response_toxicity_score < 0.1 and 
-            hallucination_score < 0.3
-        )
-        current_span.set_attribute("custom.is_high_quality_response", is_high_quality)
+        current_span.set_attribute("custom.has_hallucination", has_hallucination)
         
         return response
 
-# Initialize the enhanced RAG application with username
-username = "data_scientist_john"  # You can change this to any username
-test_app = EnhancedRAGApplication(username=username)
+# Initialize the RAG application
+test_app = RAGApplication()
 
 # Test basic functionality
-print("\n" + "="*60)
-print("TESTING ENHANCED RAG APPLICATION")
-print("="*60)
 print("Testing basic functionality...")
 test_response = test_app.answer_query("What is machine learning?")
 print(f"Test successful: {test_response[:100] if test_response else 'No response'}...")
@@ -233,32 +222,28 @@ print(f"Test successful: {test_response[:100] if test_response else 'No response
 connector = SnowflakeConnector(snowpark_session=session)
 
 # Register the app
-app_name = f"enhanced_rag_metrics_app_{int(time.time())}"
+app_name = "metric_rag"
 tru_app = TruApp(
     test_app,
     app_name=app_name, 
-    app_version="v2.0_enhanced",
+    app_version="v1.0",
     connector=connector,
     main_method=test_app.answer_query
 )
 
 print(f"Application registered successfully: {app_name}")
 
-# Create enhanced test dataset
+# Create test dataset
 test_data = pd.DataFrame({
     'query': [
         "What is machine learning?",
         "What are cloud computing benefits?", 
-        "What are AI applications?",
-        "Tell me about artificial intelligence in healthcare",
-        "How does machine learning help businesses?"
+        "What are AI applications?"
     ],
     'expected_answer': [
         "Machine learning enables computers to learn from data without explicit programming.",
         "Cloud computing provides scalability, cost-effectiveness, and accessibility.",
-        "AI applications include chatbots, recommendation systems, and autonomous vehicles.",
-        "AI in healthcare includes medical diagnosis, drug discovery, and patient monitoring systems.",
-        "Machine learning helps businesses through predictive analytics, automation, and data-driven insights."
+        "AI applications include chatbots, recommendation systems, and autonomous vehicles."
     ]
 })
 
@@ -266,11 +251,11 @@ print(f"Created dataset with {len(test_data)} test queries")
 
 # SINGLE run configuration as per documentation
 run_config = RunConfig(
-    run_name=f"enhanced_metrics_run_{int(time.time())}",
-    description="Enhanced metrics with toxicity and hallucination detection",
-    label="enhanced_metrics_test",
+    run_name="test_run_v27",
+    description="All metrics computation on single run",
+    label="all_metrics_test",
     source_type="DATAFRAME",
-    dataset_name="Enhanced RAG test dataset",
+    dataset_name="All metrics test dataset",
     dataset_spec={
         "RETRIEVAL.QUERY_TEXT": "query",
         "RECORD_ROOT.INPUT": "query",
@@ -286,13 +271,60 @@ run = tru_app.add_run(run_config=run_config)
 print("Single run added successfully")
 
 # Start the run and wait for completion FIRST
-print("\n" + "="*60)
-print("STARTING ENHANCED RUN EXECUTION")
-print("="*60)
-
 print("Starting run execution...")
 run.start(input_df=test_data)
 print("Run execution completed")
+
+print(f"\n🔍 SQL QUERY TO GET RUN DETAILS:")
+print(f"============================================")
+print(f"""
+-- Query to get all observability data for your specific run
+SELECT 
+    timestamp,
+    record_type,
+    trace,
+    resource_attributes,
+    record_attributes,
+    record
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE resource_attributes:external_agent_name::string = 'metric_rag'
+  AND resource_attributes:run_name::string = 'test_run_v27'
+ORDER BY timestamp DESC;
+
+-- Query to get custom attributes for toxicity and hallucination
+SELECT 
+    timestamp,
+    trace:trace_id::string as trace_id,
+    trace:span_id::string as span_id,
+    record_attributes:"custom.username"::string as username,
+    record_attributes:"custom.query_toxicity_score"::float as query_toxicity_score,
+    record_attributes:"custom.query_is_toxic"::boolean as query_is_toxic,
+    record_attributes:"custom.response_toxicity_score"::float as response_toxicity_score,
+    record_attributes:"custom.response_is_toxic"::boolean as response_is_toxic,
+    record_attributes:"custom.hallucination_score"::float as hallucination_score,
+    record_attributes:"custom.has_hallucination"::boolean as has_hallucination,
+    record_attributes
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE resource_attributes:external_agent_name::string = 'metric_rag'
+  AND resource_attributes:run_name::string = 'test_run_v27'
+  AND record_type = 'SPAN'
+  AND record_attributes:"custom.username" IS NOT NULL
+ORDER BY timestamp DESC;
+
+-- Query to get evaluation metrics for the run
+SELECT 
+    timestamp,
+    record_attributes:metric_name::string as metric_name,
+    record_attributes:score::float as metric_score,
+    record_attributes:explanation::string as metric_explanation
+FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS 
+WHERE resource_attributes:external_agent_name::string = 'metric_rag'
+  AND resource_attributes:run_name::string = 'test_run_v27'
+  AND record_type = 'SPAN'
+  AND record_attributes:metric_name IS NOT NULL
+ORDER BY timestamp DESC;
+""")
+print(f"============================================")
 
 # CRITICAL: Wait for invocation to complete before ANY metrics computation
 print("\n" + "="*60)
@@ -362,7 +394,7 @@ for metric in metrics_to_compute:
 
 # Final results
 print("\n" + "="*60)
-print("FINAL ENHANCED RESULTS")
+print("FINAL RESULTS - CORRECT DOCUMENTATION APPROACH")
 print("="*60)
 print(f"✅ Successful metrics: {successful_metrics}")
 print(f"❌ Failed metrics: {failed_metrics}")
@@ -372,34 +404,29 @@ print(f"Success rate: {len(successful_metrics)}/{len(metrics_to_compute)}")
 final_status = run.get_status()
 print(f"\nFinal run status: {final_status}")
 
-print("\nEnhanced RAG approach used:")
+print("\nCorrect approach used:")
 print("✅ Single run configuration")
 print("✅ Wait for invocation completion FIRST")
 print("✅ Multiple compute_metrics() calls on SAME run")
-print("✅ Username logging with custom attributes")
-print("✅ Toxicity detection for queries and responses")
-print("✅ Hallucination detection for generated answers")
-print("✅ Quality assessment metrics")
 print("✅ Following documentation exactly")
 
-print(f"\n📊 Check Snowsight AI & ML -> Evaluations -> {app_name}")
-print("🔍 Should see ONE run with multiple metrics and custom attributes:")
-print("   - custom.username")
-print("   - custom.query_toxicity_score")
-print("   - custom.response_toxicity_score") 
-print("   - custom.hallucination_score")
-print("   - custom.response_length")
-print("   - custom.context_count")
-print("   - custom.is_high_quality_response")
+print("\n📊 Check Snowsight AI & ML -> Evaluations")
+print("🔍 Should see ONE run with multiple metrics")
 
-print(f"\n🔍 Query custom attributes with SQL:")
-print(f"   SELECT * FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
-print(f"   WHERE app_name = '{app_name}'")
-print(f"   AND attributes:custom.username::string = '{username}';")
+print(f"\n🎯 ADDITIONAL LOGGED ATTRIBUTES:")
+print("✅ custom.username: data_scientist_user")
+print("✅ custom.query_toxicity_score: [0.0-1.0]")
+print("✅ custom.query_is_toxic: [true/false]")
+print("✅ custom.response_toxicity_score: [0.0-1.0]")
+print("✅ custom.response_is_toxic: [true/false]")
+print("✅ custom.hallucination_score: [0.0-1.0]")
+print("✅ custom.has_hallucination: [true/false]")
 
-print(f"\n🎯 ENHANCED FEATURES SUMMARY:")
-print(f"👤 Username: {username}")
-print("🦠 Toxicity Detection: s-nlp/roberta_toxicity_classifier")
-print("🔍 Hallucination Detection: LettuceDetect (ModernBERT-based)")
-print("📊 Custom Metrics: Quality assessment, response length, context count")
-print("✅ Complete AI observability with safety metrics!")
+print(f"\n📊 App Name: metric_rag")
+print(f"🏃 Run Name: test_run_v27")
+print(f"📍 Table Location: SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS")
+
+print(f"\n🔍 Use the SQL queries above to analyze your run data!")
+print(f"   - First query: Complete observability data")
+print(f"   - Second query: Custom toxicity & hallucination attributes")  
+print(f"   - Third query: Evaluation metrics results")
