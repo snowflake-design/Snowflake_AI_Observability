@@ -91,15 +91,20 @@ def initialize_models():
             print(f"❌ Failed to load hallucination model: {e}")
     
     # Initialize PII detection
-    if PII_AVAILABLE:
-        try:
-            print("Loading PII detection models...")
-            pii_analyzer = AnalyzerEngine()
-            pii_anonymizer = AnonymizerEngine()
-            print("✅ PII detector loaded")
-        except Exception as e:
-            print(f"❌ Failed to load PII models: {e}")
-
+# Initialize PII detection with transformers pipeline
+    # Initialize PII detection with transformers pipeline
+if PII_AVAILABLE:
+    try:
+        print("Loading PII detection pipeline...")
+        # Use a pre-trained NER model for PII detection
+        # You can replace this with your local model path: "./model"
+        pii_pipeline = pipeline(
+            "token-classification", 
+            model="dbmdz/bert-large-cased-finetuned-conll03-english",  # ← CHANGE THIS LINE
+            aggregation_strategy="first",
+            device=-1  # Use CPU
+        )
+        
 def detect_toxicity(text):
     """Detect toxicity in text - ONLY for output responses"""
     if not TOXICITY_AVAILABLE or toxicity_tokenizer is None or toxicity_model is None:
