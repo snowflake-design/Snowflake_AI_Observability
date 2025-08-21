@@ -1,0 +1,632 @@
+# Snowflake AI Observability Documentation
+
+## Table of Contents
+
+1. Overview
+2. Implementation Types
+3. Prerequisites
+4. Type 1: Snowflake Environment Implementation
+5. Type 2: On-Premise Implementation
+6. Available Metrics and Span Attributes
+7. Run Management
+8. Viewing Results
+9. Important Notes and References
+
+---
+
+## 1. Overview
+
+Snowflake AI Observability is a comprehensive solution designed to help organizations evaluate and trace their AI applications effectively. This system enables users to measure performance, run evaluations, and debug applications using the TruLens library for tracking and evaluation purposes.
+
+The observability framework provides detailed insights into AI application behavior, allowing developers and data scientists to monitor, analyze, and improve their machine learning workflows within the Snowflake ecosystem.
+
+## 2. Implementation Types
+
+The documentation outlines two distinct implementation approaches based on deployment requirements and infrastructure preferences:
+
+**Type 1: Snowflake Environment Implementation**
+This approach involves running RAG (Retrieval-Augmented Generation) applications entirely within the Snowflake environment using Snowflake Notebooks. All processing, evaluation, and observability tracking occur within the Snowflake ecosystem.
+
+**Type 2: On-Premise Implementation** 
+This approach supports on-premise RAG applications that log observability data to Snowflake using Network Policy Control (NPC). The application runs externally while leveraging Snowflake for data storage and analysis.
+
+## 3. Prerequisites
+
+### Required Database Privileges
+
+Before implementing either approach, ensure the following privileges are granted to your role:
+
+    GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <your_role>;
+    GRANT CREATE EXTERNAL AGENT ON SCHEMA <your_schema> TO ROLE <your_role>;
+    GRANT CREATE TASK ON SCHEMA <your_schema> TO ROLE <your_role>;
+    GRANT EXECUTE TASK ON ACCOUNT TO ROLE <your_role>;
+    GRANT APPLICATION ROLE SNOWFLAKE.AI_OBSERVABILITY_EVENTS_LOOKUP TO ROLE <your_role>;
+
+### Required Python Packages
+
+The following Python packages must be installed depending on your implementation type:
+
+- snowflake-ml-python
+- snowflake.core
+- trulens-core
+- trulens-providers-cortex
+- trulens-connectors-snowflake
+
+For Type 1 implementations, install these packages from the Snowflake conda channel. For Type 2 implementations, use pip installation.
+
+## 4. Type 1: Snowflake Environment Implementation
+
+### Step 1: Environment Setup
+
+Begin by downloading the required notebook from the official GitHub repository:
+https://github.com/Snowflake-Labs/sfguide-getting-started-with-ai-observability/blob/main/getting-started-with-ai-observability.ipynb
+
+Import this notebook file into Snowsight to create a new Snowflake notebook environment.
+
+### Step 2: Package Installation
+
+Install the required packages from the Snowflake conda channel within your notebook environment:
+
+- snowflake-ml-python
+- snowflake.core
+- trulens-core
+- trulens-providers-cortex
+- trulens-connectors-snowflake
+
+### Step 3: Snowflake Objects Setup
+
+Initialize your Snowflake session and create the necessary database infrastructure:
+
+    from snowflake.snowpark.context import get_active_session
+    session = get_active_session()
+
+Create the required database and warehouse objects:
+
+    CREATE DATABASE IF NOT EXISTS cortex_search_tutorial_db;
+    CREATE OR REPLACE WAREHOUSE cortex_search_tutorial_wh WITH
+        WAREHOUSE_SIZE='X-SMALL'
+        AUTO_SUSPEND = 120
+        AUTO_RESUME = TRUE
+        INITIALLY_SUSPENDED=TRUE;
+    USE WAREHOUSE cortex_search_tutorial_wh;
+
+### Step 4: Data Preparation Process
+
+**Stage Creation**
+
+Create a stage for storing your documents:
+
+    CREATE OR REPLACE STAGE cortex_search_tutorial_db.public.fomc
+        DIRECTORY = (ENABLE = TRUE)
+        ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+
+**Document Upload**
+
+Upload your PDF files to the stage through Snowsight by navigating to cortex_search_tutorial_db.public.fomc and uploading your files. Verify the upload using:
+
+    ls @cortex_search_tutorial_db.public.fomc
+
+**Document Parsing**
+
+Parse the uploaded documents using Snowflake's CORTEX.PARSE_DOCUMENT function:
+
+    CREATE OR REPLACE TABLE CORTEX_SEARCH_TUTORIAL_DB.PUBLIC.PARSED_FOMC_CONTENT AS SELECT
+        relative_path,
+        TO_VARCHAR(
+            SNOWFLAKE.CORTEX.PARSE_DOCUMENT(
+                @cortex_search_tutorial_db.public.fomc,
+                relative_path,
+                {'mode': 'LAYOUT'}
+            ):content
+        ) AS parsed_text
+    FROM directory(@cortex_search_tutorial_db.public.fomc)
+    WHERE relative_path LIKE '%.pdf';
+
+**Text Chunking**
+
+Create chunked content for efficient retrieval:
+
+    CREATE OR REPLACE TABLE CORTEX_SEARCH_TUTORIAL_DB.PUBLIC.CHUNKED_FOMC_CONTENT (
+        file_name VARCHAR,
+        CHUNK VARCHAR
+    );
+
+    INSERT INTO CORTEX_SEARCH_TUTORIAL_DB.PUBLIC.CHUNKED_FOMC_CONTENT (file_name, CHUNK)
+    SELECT
+        relative_path,
+        c.value AS CHUNK
+    FROM
+        CORTEX_SEARCH_TUTORIAL_DB.PUBLIC.PARSED_FOMC_CONTENT,
+        LATERAL FLATTEN(input => SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER(
+            parsed_text,
+            'markdown',
+            1800,
+            250
+        )) c;
+
+**Search Service Creation**
+
+Create a Cortex search service for efficient document retrieval:
+
+    CREATE OR REPLACE CORTEX SEARCH SERVICE CORTEX_SEARCH_TUTORIAL_DB.PUBLIC.FOMC_SEARCH_SERVICE
+        ON chunk
+        WAREHOUSE = cortex_search_tutorial_wh
+        TARGET_LAG = '1 hour'
+        EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'
+    AS (
+        SELECT
+            file_name,
+            chunk
+        FROM CORTEX_SEARCH_TUTORIAL_DB.PUBLIC.CHUNKED_FOMC_CONTENT
+    );
+
+### Step 5: Retriever Class Implementation
+
+Create a custom retriever class for accessing the search service:
+
+    from snowflake.snowpark.context import get_active_session
+    session = get_active_session()
+    import os
+    from snowflake.core import Root
+    from typing import List
+    from snowflake.snowpark.session import Session
+
+    class CortexSearchRetriever:
+        def __init__(self, snowpark_session: Session, limit_to_retrieve: int = 4):
+            self._snowpark_session = snowpark_session
+            self._limit_to_retrieve = limit_to_retrieve
+
+        def retrieve(self, query: str) -> List[str]:
+            root = Root(session)
+            search_service = (root
+                .databases["CORTEX_SEARCH_TUTORIAL_DB"]
+                .schemas["PUBLIC"]
+                .cortex_search_services["FOMC_SEARCH_SERVICE"]
+            )
+            resp = search_service.search(
+                query=query,
+                columns=["chunk"],
+                limit=self._limit_to_retrieve
+            )
+            if resp.results:
+                return [curr["chunk"] for curr in resp.results]
+            else:
+                return []
+
+    retriever = CortexSearchRetriever(snowpark_session=session, limit_to_retrieve=3)
+    retrieved_context = retriever.retrieve(query="how was inflation expected to evolve in 2024?")
+
+### Step 6: TruLens Tracing Configuration
+
+Enable TruLens tracing and create the observability database:
+
+    import os
+    os.environ["TRULENS_OTEL_TRACING"] = "1"
+
+    create or replace database observability_db;
+    use database observability_db;
+    create or replace schema observability_schema;
+    use schema observability_schema;
+
+### Step 7: Instrumented RAG System Creation
+
+Implement a fully instrumented RAG system with proper tracing:
+
+    from snowflake.cortex import complete
+    from trulens.core.otel.instrument import instrument
+    from trulens.otel.semconv.trace import SpanAttributes
+
+    class RAG:
+        def __init__(self):
+            self.retriever = CortexSearchRetriever(snowpark_session=session, limit_to_retrieve=4)
+
+        @instrument(
+            span_type=SpanAttributes.SpanType.RETRIEVAL,
+            attributes={
+                SpanAttributes.RETRIEVAL.QUERY_TEXT: "query",
+                SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS: "return",
+            }
+        )
+        def retrieve_context(self, query: str) -> list:
+            """Retrieve relevant text from vector store."""
+            return self.retriever.retrieve(query)
+
+        @instrument(span_type=SpanAttributes.SpanType.GENERATION)
+        def generate_completion(self, query: str, context_str: list) -> str:
+            """Generate answer from context."""
+            prompt = f"""
+    You are an expert assistant extracting information from context provided.
+    Answer the question in long-form, fully and completely, based on the context. Do not hallucinate.
+    If you don´t have the information just say so. If you do have the information you need, just tell me the answer.
+
+    Context: {context_str}
+
+    Question:
+    {query}
+
+    Answer:
+    """
+            response = ""
+            stream = complete("mistral-large2", prompt, stream=True)
+            for update in stream:
+                response += update
+                print(update, end='')
+            return response
+
+        @instrument(
+            span_type=SpanAttributes.SpanType.RECORD_ROOT,
+            attributes={
+                SpanAttributes.RECORD_ROOT.INPUT: "query",
+                SpanAttributes.RECORD_ROOT.OUTPUT: "return",
+            })
+        def query(self, query: str) -> str:
+            context_str = self.retrieve_context(query)
+            return self.generate_completion(query, context_str)
+
+    rag = RAG()
+
+### Step 8: System Testing
+
+Test your RAG system with a sample query:
+
+    response = rag.query("how was inflation expected to evolve in 2024?")
+
+### Step 9: TruLens Application Registration
+
+Register your application with TruLens for monitoring and evaluation:
+
+    from trulens.apps.app import TruApp
+    from trulens.connectors.snowflake import SnowflakeConnector
+
+    tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
+
+    app_name = "fed_reserve_rag"
+    app_version = "cortex_search"
+
+    tru_rag = TruApp(
+        rag,
+        app_name=app_name,
+        app_version=app_version,
+        connector=tru_snowflake_connector
+    )
+
+### Step 10: Test Dataset Preparation
+
+Download the evaluation dataset from:
+https://github.com/Snowflake-Labs/sfguide-getting-started-with-ai-observability/blob/main/fomc_dataset.csv
+
+Upload the fomc_dataset.csv file to Snowflake by selecting Data → Add Data → Load data into a Table. Choose OBSERVABILITY_DB.OBSERVABILITY_SCHEMA, create table FOMC_DATA, and map columns to QUERY and GROUND_TRUTH_RESPONSE.
+
+### Step 11: Evaluation Configuration
+
+Configure and prepare the evaluation run:
+
+    from trulens.core.run import Run
+    from trulens.core.run import RunConfig
+
+    run_name = "experiment_1_run"
+    run_config = RunConfig(
+        run_name=run_name,
+        dataset_name="FOMC_DATA",
+        description="Questions about the Federal Open Market Committee meetings",
+        label="fomc_rag_eval",
+        source_type="TABLE",
+        dataset_spec={
+            "input": "QUERY",
+            "ground_truth_output": "GROUND_TRUTH_RESPONSE",
+        },
+    )
+
+    run: Run = tru_rag.add_run(run_config=run_config)
+
+### Step 12: Evaluation Execution
+
+Start the evaluation process:
+
+    run.start()
+
+### Step 13: Metrics Computation
+
+Compute comprehensive evaluation metrics:
+
+    run.compute_metrics([
+        "answer_relevance",
+        "context_relevance",
+        "groundedness",
+    ])
+
+## 5. Type 2: On-Premise Implementation
+
+### Step 1: Environment Configuration
+
+Configure your external Python environment with the required settings:
+
+    import os
+    os.environ["TRULENS_OTEL_TRACING"] = "1"
+
+Install the required packages using pip (this cannot be run in Snowflake Notebook):
+- pip install snowflake-ml-python>=2.1.2
+- pip install snowflake.core
+- pip install trulens-core
+- pip install trulens-providers-cortex  
+- pip install trulens-connectors-snowflake
+
+### Step 2: Snowflake Connection Setup
+
+Create a connection to your Snowflake instance:
+
+    from snowflake.snowpark import Session
+
+    connection_parameters = {
+        "account": "<account>",
+        "user": "<user>",
+        "password": "<password>",
+        "database": "<database>",
+        "schema": "<schema>",
+        "warehouse": "<warehouse>",
+        "role": "<role>",
+    }
+
+    session = Session.builder.configs(connection_parameters).create()
+
+### Step 3: Application Instrumentation
+
+Instrument your existing application with TruLens decorators:
+
+    from trulens.core.otel.instrument import instrument
+    from trulens.otel.semconv.trace import SpanAttributes
+
+    class YourRAGApp:
+        @instrument(
+            span_type=SpanAttributes.SpanType.RETRIEVAL,
+            attributes={
+                SpanAttributes.RETRIEVAL.QUERY_TEXT: "query",
+                SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS: "return",
+            }
+        )
+        def retrieve_context(self, query: str) -> list:
+            # Your retrieval logic implementation
+            return retrieved_contexts
+
+        @instrument(span_type=SpanAttributes.SpanType.GENERATION)
+        def generate_completion(self, query: str, context_str: list) -> str:
+            # Your generation logic implementation
+            return response
+
+        @instrument(
+            span_type=SpanAttributes.SpanType.RECORD_ROOT,
+            attributes={
+                SpanAttributes.RECORD_ROOT.INPUT: "query",
+                SpanAttributes.RECORD_ROOT.OUTPUT: "return",
+            }
+        )
+        def query(self, query: str) -> str:
+            context_str = self.retrieve_context(query)
+            return self.generate_completion(query, context_str)
+
+### Step 4: Snowflake Registration
+
+Register your application with the Snowflake observability system:
+
+    from trulens.apps.app import TruApp
+    from trulens.connectors.snowflake import SnowflakeConnector
+
+    tru_snowflake_connector = SnowflakeConnector(snowpark_session=session)
+
+    app = YourRAGApp()
+
+    tru_app = TruApp(
+        app,
+        app_name="your_app_name",
+        app_version="v1.0",
+        connector=tru_snowflake_connector
+    )
+
+### Step 5: Evaluation Creation and Execution
+
+Create and execute evaluations using either DataFrame or Snowflake table sources:
+
+**Using DataFrame Source**
+
+    from trulens.core.run import RunConfig
+    import pandas as pd
+
+    run_config = RunConfig(
+        run_name="your_run_name",
+        description="description",
+        label="label",
+        source_type="DATAFRAME",
+        dataset_name="your_dataset_name",
+        dataset_spec={
+            "RECORD_ROOT.INPUT": "input_column",
+            "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_output_column",
+        },
+        llm_judge_name="mistral-large2"  # Optional parameter
+    )
+
+    run = tru_app.add_run(run_config=run_config)
+    run.start(input_df=your_dataframe)
+
+**Using Snowflake Table Source**
+
+    run_config = RunConfig(
+        run_name="your_run_name",
+        description="description", 
+        label="label",
+        source_type="TABLE",
+        dataset_name="YOUR_TABLE_NAME",
+        dataset_spec={
+            "RECORD_ROOT.INPUT": "input_column",
+            "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "expected_output_column",
+        }
+    )
+
+    run = tru_app.add_run(run_config=run_config)
+    run.start()
+
+## 6. Available Metrics and Span Attributes
+
+### Span Types and Attributes
+
+**RECORD_ROOT (Main Application)**
+
+    SpanAttributes.SpanType.RECORD_ROOT
+
+Available attributes:
+- SpanAttributes.RECORD_ROOT.INPUT
+- SpanAttributes.RECORD_ROOT.OUTPUT
+- SpanAttributes.RECORD_ROOT.GROUND_TRUTH_OUTPUT
+
+**RETRIEVAL (Search/Retrieval Operations)**
+
+    SpanAttributes.SpanType.RETRIEVAL
+
+Available attributes:
+- SpanAttributes.RETRIEVAL.QUERY_TEXT
+- SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS
+
+**GENERATION (LLM Generation Operations)**
+
+    SpanAttributes.SpanType.GENERATION
+
+Available attributes:
+- SpanAttributes.GENERATION.INPUT_MESSAGES
+- SpanAttributes.GENERATION.OUTPUT_TEXT
+- SpanAttributes.GENERATION.MODEL_NAME
+
+### Evaluation Metrics
+
+The system supports comprehensive evaluation metrics:
+
+    run.compute_metrics([
+        "answer_relevance",      # Evaluates if answer addresses the question
+        "context_relevance",     # Assesses if retrieved context is relevant
+        "groundedness",          # Determines if answer is supported by context
+        "coherence",            # Measures logical consistency of response
+        "correctness",          # Checks factual accuracy (requires ground truth)
+        "helpfulness",          # Evaluates response utility
+        "controversiality",     # Ensures response avoids controversial topics
+        "maliciousness"         # Verifies response is free from harmful content
+    ])
+
+### Dataset Specification Configuration
+
+    dataset_spec = {
+        "RECORD_ROOT.INPUT": "your_input_column",
+        "RECORD_ROOT.OUTPUT": "your_output_column", 
+        "RECORD_ROOT.GROUND_TRUTH_OUTPUT": "your_expected_output_column",
+        "RETRIEVAL.QUERY_TEXT": "your_query_column",
+        "RETRIEVAL.RETRIEVED_CONTEXTS": "your_contexts_column"
+    }
+
+## 7. Run Management
+
+### Status Monitoring
+
+Check the current status of your evaluation runs:
+
+    run.get_status()
+
+Possible statuses include:
+- INVOCATION_IN_PROGRESS
+- INVOCATION_COMPLETED
+- INVOCATION_PARTIALLY_COMPLETED
+
+### Run Operations
+
+**List All Runs**
+
+    tru_app.list_runs()
+
+**Retrieve Specific Run**
+
+    run = tru_app.get_run(run_name="your_run_name")
+
+**Run Control Operations**
+
+    run.describe()  # View detailed run information
+    run.cancel()    # Cancel a currently running evaluation
+    run.delete()    # Delete run metadata while preserving traces
+
+## 8. Viewing Results
+
+### Snowsight Navigation
+
+Access your evaluation results through the Snowsight interface:
+
+1. Navigate to Snowsight web interface
+2. Select AI & ML → Evaluations from the main menu
+3. Choose your registered application
+4. Select the specific run you want to analyze
+
+### Available Analytics
+
+The interface provides comprehensive analytics including:
+
+**Run Overview**
+- Summary statistics and performance metrics
+- Overall evaluation scores and trends
+- Execution timing and resource utilization
+
+**Individual Record Analysis**
+- Detailed performance for each test case
+- Input/output pairs with quality scores
+- Context relevance and answer accuracy metrics
+
+**Execution Traces**
+- Step-by-step execution flow
+- Component-level performance data
+- Error tracking and debugging information
+
+**LLM Judge Explanations**
+- Detailed reasoning behind metric scores
+- Quality assessment explanations
+- Improvement recommendations
+
+**Performance Analytics**
+- Response latency measurements
+- Token usage statistics
+- Resource consumption patterns
+
+**Comparative Analysis**
+- Side-by-side run comparisons
+- Performance trend analysis over time
+- A/B testing capabilities
+
+## 9. Important Notes and References
+
+### Key Implementation Considerations
+
+**Type 1 Implementation Requirements**
+- Runs entirely within Snowflake using Snowflake Notebooks
+- All data processing and evaluation occurs in Snowflake environment
+- Leverages native Snowflake compute resources
+
+**Type 2 Implementation Requirements**
+- Runs externally but logs observability data to Snowflake
+- Requires version 2.1.2 or higher of required packages
+- Cannot be executed within Snowflake Notebook environment
+- Requires TRULENS_OTEL_TRACING=1 environment variable
+
+### Data Storage and Security
+
+All observability data is securely stored in the SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS table, ensuring data governance and compliance with organizational security policies.
+
+### Evaluation Methodology
+
+The system employs an "LLM-as-a-judge" approach for metric computation, providing scores on a scale from 0.0 to 1.0. This methodology ensures consistent and objective evaluation across different types of AI applications.
+
+### Reference Documentation
+
+**Official Documentation**
+- Type 1 Tutorial: https://quickstarts.snowflake.com/guide/getting_started_with_ai_observability/
+- Type 2 Documentation: https://docs.snowflake.com/en/user-guide/snowflake-cortex/ai-observability/evaluate-ai-applications
+- AI Observability Reference: https://docs.snowflake.com/en/user-guide/snowflake-cortex/ai-observability/reference
+
+**External Resources**
+- TruLens Documentation: https://www.trulens.org/
+- GitHub Repository: https://github.com/Snowflake-Labs/sfguide-getting-started-with-ai-observability/
+
+### Support and Community
+
+For additional support, troubleshooting, and community discussions, refer to the official Snowflake documentation and TruLens community resources. Regular updates and enhancements are released to improve functionality and expand evaluation capabilities.
